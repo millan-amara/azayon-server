@@ -38,7 +38,10 @@ const server = http.createServer(app);
 // Socket.io
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL,
+    origin: [
+      'https://app.azayon.com',
+      'http://localhost:5173',
+    ],
     credentials: true,
   },
 });
@@ -54,7 +57,10 @@ app.use(helmet());
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === 'development' ? 'dev' : 'combined'));
 app.use(cors({
-  origin: process.env.CLIENT_URL,
+  origin: [
+      'https://app.azayon.com',
+      'http://localhost:5173',
+  ],
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
