@@ -65,6 +65,8 @@ app.use(cors({
   credentials: true,
 }));
 
+app.use('/api/billing/webhook', express.raw({ type: '*/*' }));
+
 // Apply JSON parsing to everything EXCEPT the Paystack webhook (needs raw body for signature)
 app.use((req, res, next) => {
   if (req.path === '/api/billing/webhook') return next();

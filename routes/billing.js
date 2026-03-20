@@ -111,11 +111,17 @@ router.post('/initialize', protect, async (req, res, next) => {
 });
 
 // POST /api/billing/webhook
-// Paystack webhook — verifies signature and updates subscription
-router.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
+router.post('/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
-    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+
+    // req.body is a raw Buffer here because of the app-level express.raw() middleware
+    const rawBody = req.body;
+
+    if (!Buffer.isBuffer(rawBody)) {
+      console.error('Webhook body is not a Buffer — body parser conflict');
+      return res.sendStatus(500);
+    }
 
     const hash = crypto
       .createHmac('sha512', PAYSTACK_SECRET)
