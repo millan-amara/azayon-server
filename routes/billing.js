@@ -8,13 +8,25 @@ const { AppError } = require('../middleware/error');
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const FOUNDING_MEMBER_SLOTS = 20;
-const PRICES = {
-  growth_monthly: { amount: 300000, label: 'Growth — KES 3,000/month', interval: 'monthly' },
-  growth_annual: { amount: 2500000, label: 'Growth — KES 25,000/year', interval: 'annually' },
-  founding_monthly: { amount: 150000, label: 'Founding Member — KES 1,500/month', interval: 'monthly' },
+
+const PLANS = {
+  growth_monthly: {
+    planCode: 'PLN_gpde83h6795kusw',
+    label: 'Growth — KES 3,000/month',
+    isFoundingMember: false,
+  },
+  growth_annual: {
+    planCode: 'PLN_2f18ov066kua7eu',
+    label: 'Growth — KES 25,000/year',
+    isFoundingMember: false,
+  },
+  founding_monthly: {
+    planCode: 'PLN_taurbqx34i81mkk',
+    label: 'Founding Member — KES 1,500/month',
+    isFoundingMember: true,
+  },
 };
 
-// Helper — call Paystack API
 const paystack = async (path, method = 'GET', body = null) => {
   const res = await fetch(`https://api.paystack.co${path}`, {
     method,
@@ -27,9 +39,8 @@ const paystack = async (path, method = 'GET', body = null) => {
   return res.json();
 };
 
-// Simple in-memory cache for founding member count (changes rarely)
 let foundingCountCache = { count: null, cachedAt: 0 };
-const FOUNDING_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const FOUNDING_CACHE_TTL = 5 * 60 * 1000;
 
 // GET /api/billing/status
 router.get('/status', protect, attachPlan, async (req, res, next) => {
@@ -38,7 +49,6 @@ router.get('/status', protect, attachPlan, async (req, res, next) => {
     const limits = req.planLimits;
     const sub = org.subscription;
 
-    // Use cached founding count to avoid hitting DB on every request
     const now = Date.now();
     if (foundingCountCache.count === null || now - foundingCountCache.cachedAt > FOUNDING_CACHE_TTL) {
       foundingCountCache.count = await Org.countDocuments({ 'subscription.isFoundingMember': true });
@@ -66,17 +76,15 @@ router.get('/status', protect, attachPlan, async (req, res, next) => {
 });
 
 // POST /api/billing/initialize
-// Creates a Paystack payment session and returns the payment URL
 router.post('/initialize', protect, async (req, res, next) => {
   try {
-    const { priceKey, email } = req.body;
-    if (!PRICES[priceKey]) throw new AppError('Invalid price', 400);
+    const { priceKey } = req.body;
+    const plan = PLANS[priceKey];
+    if (!plan) throw new AppError('Invalid plan', 400);
 
     const org = await Org.findById(req.orgId);
-    const price = PRICES[priceKey];
 
-    // Check founding member availability
-    if (priceKey === 'founding_monthly') {
+    if (plan.isFoundingMember) {
       const foundingCount = await Org.countDocuments({ 'subscription.isFoundingMember': true });
       if (foundingCount >= FOUNDING_MEMBER_SLOTS) {
         throw new AppError('Founding member slots are full', 400);
@@ -84,14 +92,15 @@ router.post('/initialize', protect, async (req, res, next) => {
     }
 
     const paystackRes = await paystack('/transaction/initialize', 'POST', {
-      email: email || req.user.email,
-      amount: price.amount, // in kobo/pesewas (Paystack uses smallest currency unit)
+      email: req.user.email,
+      plan: plan.planCode,
       currency: 'KES',
       metadata: {
         orgId: req.orgId.toString(),
         userId: req.user._id.toString(),
         priceKey,
         orgName: org.name,
+        cancel_action: `${process.env.CLIENT_URL}/settings?tab=billing`,
       },
       callback_url: `${process.env.CLIENT_URL}/settings?tab=billing&payment=success`,
       channels: ['card', 'mobile_money', 'bank_transfer'],
@@ -114,8 +123,6 @@ router.post('/initialize', protect, async (req, res, next) => {
 router.post('/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
-
-    // req.body is a raw Buffer here because of the app-level express.raw() middleware
     const rawBody = req.body;
 
     if (!Buffer.isBuffer(rawBody)) {
@@ -136,6 +143,8 @@ router.post('/webhook', async (req, res) => {
     const event = JSON.parse(rawBody.toString());
     const { event: eventType, data } = event;
 
+    console.log(`Paystack webhook: ${eventType}`);
+
     if (eventType === 'charge.success') {
       const { orgId, priceKey } = data.metadata || {};
       if (!orgId) return res.sendStatus(200);
@@ -144,7 +153,6 @@ router.post('/webhook', async (req, res) => {
       if (!org) return res.sendStatus(200);
 
       const isFoundingMember = priceKey === 'founding_monthly';
-      const isAnnual = priceKey === 'growth_annual';
 
       org.subscription.plan = 'growth';
       org.subscription.status = 'active';
@@ -154,6 +162,7 @@ router.post('/webhook', async (req, res) => {
       if (isFoundingMember) {
         org.subscription.isFoundingMember = true;
         org.subscription.foundingMemberPrice = 1500;
+        foundingCountCache.count = null;
       }
 
       if (data.customer?.customer_code) {
@@ -161,17 +170,56 @@ router.post('/webhook', async (req, res) => {
       }
 
       await org.save();
+      console.log(`Org ${orgId} upgraded to Growth (${priceKey})`);
     }
 
-    if (eventType === 'subscription.disable' || eventType === 'invoice.payment_failed') {
-      const orgId = data.metadata?.orgId;
-      if (!orgId) return res.sendStatus(200);
+    if (eventType === 'subscription.create') {
+      const customerCode = data.customer?.customer_code;
+      const subscriptionCode = data.subscription_code;
+      if (!customerCode || !subscriptionCode) return res.sendStatus(200);
 
-      const org = await Org.findById(orgId);
+      const org = await Org.findOne({ 'subscription.paystackCustomerCode': customerCode });
       if (org) {
-        org.subscription.status = eventType === 'invoice.payment_failed' ? 'past_due' : 'cancelled';
-        if (eventType === 'subscription.disable') org.subscription.cancelledAt = new Date();
+        org.subscription.paystackSubscriptionCode = subscriptionCode;
         await org.save();
+        console.log(`Stored subscription code ${subscriptionCode} for org ${org._id}`);
+      }
+    }
+
+    if (eventType === 'invoice.payment_successful') {
+      const subscriptionCode = data.subscription?.subscription_code;
+      if (!subscriptionCode) return res.sendStatus(200);
+
+      const org = await Org.findOne({ 'subscription.paystackSubscriptionCode': subscriptionCode });
+      if (org && org.subscription.status !== 'active') {
+        org.subscription.status = 'active';
+        await org.save();
+        console.log(`Recurring payment succeeded for org ${org._id}`);
+      }
+    }
+
+    if (eventType === 'invoice.payment_failed') {
+      const subscriptionCode = data.subscription?.subscription_code;
+      if (!subscriptionCode) return res.sendStatus(200);
+
+      const org = await Org.findOne({ 'subscription.paystackSubscriptionCode': subscriptionCode });
+      if (org) {
+        org.subscription.status = 'past_due';
+        await org.save();
+        console.log(`Payment failed for org ${org._id}`);
+      }
+    }
+
+    if (eventType === 'subscription.disable') {
+      const subscriptionCode = data.subscription_code;
+      if (!subscriptionCode) return res.sendStatus(200);
+
+      const org = await Org.findOne({ 'subscription.paystackSubscriptionCode': subscriptionCode });
+      if (org) {
+        org.subscription.status = 'cancelled';
+        org.subscription.cancelledAt = new Date();
+        await org.save();
+        console.log(`Subscription cancelled for org ${org._id}`);
       }
     }
 
@@ -188,12 +236,12 @@ router.post('/cancel', protect, async (req, res, next) => {
     const org = await Org.findById(req.orgId);
     if (!org) throw new AppError('Org not found', 404);
 
-    // If they have a Paystack subscription code, cancel it
     if (org.subscription.paystackSubscriptionCode) {
-      await paystack(`/subscription/disable`, 'POST', {
+      const result = await paystack('/subscription/disable', 'POST', {
         code: org.subscription.paystackSubscriptionCode,
         token: req.body.emailToken,
       });
+      console.log('Paystack cancel result:', result.message);
     }
 
     org.subscription.status = 'cancelled';

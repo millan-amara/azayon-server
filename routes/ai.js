@@ -41,11 +41,28 @@ router.post('/chat', async (req, res, next) => {
     }
 
     if (stream) {
-      // Pipe the stream directly to the client
+      // Use Web Streams reader (Node 18+ fetch returns Web ReadableStream, not Node stream)
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      response.body.pipe(res);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) { res.end(); break; }
+            res.write(decoder.decode(value, { stream: true }));
+          }
+        } catch (err) {
+          console.error('Stream error:', err.message);
+          res.end();
+        }
+      };
+
+      pump();
     } else {
       const data = await response.json();
       res.json({ text: data.content?.[0]?.text || '' });

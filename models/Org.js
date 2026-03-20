@@ -11,8 +11,8 @@ const PLANS = {
   },
   growth: {
     name: 'Growth',
-    maxContacts: Infinity,
-    maxDeals: Infinity,
+    maxContacts: 999999,
+    maxDeals: 999999,
     maxUsers: 5,
     features: ['pipeline', 'contacts', 'tasks', 'automations', 'ai', 'attachments', 'webhooks'],
   },

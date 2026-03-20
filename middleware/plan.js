@@ -39,7 +39,7 @@ const requireFeature = (feature) => (req, res, next) => {
 const checkContactLimit = async (req, res, next) => {
   try {
     const limits = req.planLimits;
-    if (!limits || limits.maxContacts === Infinity) return next();
+    if (!limits || limits.maxContacts >= 999999) return next();
 
     const count = await Contact.countDocuments({ orgId: req.orgId });
     if (count >= limits.maxContacts) {
@@ -64,7 +64,7 @@ const checkContactLimit = async (req, res, next) => {
 const checkDealLimit = async (req, res, next) => {
   try {
     const limits = req.planLimits;
-    if (!limits || limits.maxDeals === Infinity) return next();
+    if (!limits || limits.maxDeals >= 999999) return next();
 
     const count = await Deal.countDocuments({ orgId: req.orgId, status: 'open' });
     if (count >= limits.maxDeals) {
