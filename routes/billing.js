@@ -94,7 +94,6 @@ router.post('/initialize', protect, async (req, res, next) => {
     const paystackRes = await paystack('/transaction/initialize', 'POST', {
       email: req.user.email,
       plan: plan.planCode,
-      currency: 'KES',
       metadata: {
         orgId: req.orgId.toString(),
         userId: req.user._id.toString(),
@@ -103,7 +102,6 @@ router.post('/initialize', protect, async (req, res, next) => {
         cancel_action: `${process.env.CLIENT_URL}/settings?tab=billing`,
       },
       callback_url: `${process.env.CLIENT_URL}/settings?tab=billing&payment=success`,
-      channels: ['card', 'mobile_money', 'bank_transfer'],
     });
 
     if (!paystackRes.status) {
