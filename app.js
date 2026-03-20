@@ -52,6 +52,7 @@ app.set('io', io);
 // Connect DB
 connectDB();
 
+
 // Middleware
 app.use(helmet());
 app.use(compression());
@@ -63,7 +64,12 @@ app.use(cors({
   ],
   credentials: true,
 }));
-app.use(express.json({ limit: '10mb' }));
+
+// Apply JSON parsing to everything EXCEPT the Paystack webhook (needs raw body for signature)
+app.use((req, res, next) => {
+  if (req.path === '/api/billing/webhook') return next();
+  express.json({ limit: '10mb' })(req, res, next);
+});
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 

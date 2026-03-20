@@ -112,19 +112,22 @@ router.post('/initialize', protect, async (req, res, next) => {
 
 // POST /api/billing/webhook
 // Paystack webhook — verifies signature and updates subscription
-router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+
     const hash = crypto
       .createHmac('sha512', PAYSTACK_SECRET)
-      .update(req.body)
+      .update(rawBody)
       .digest('hex');
 
     if (hash !== signature) {
+      console.error('Paystack webhook signature mismatch');
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    const event = JSON.parse(req.body);
+    const event = JSON.parse(rawBody.toString());
     const { event: eventType, data } = event;
 
     if (eventType === 'charge.success') {
