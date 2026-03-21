@@ -3,16 +3,9 @@ const Task = require('../models/Task');
 const Contact = require('../models/Contact');
 const Deal = require('../models/Deal');
 const User = require('../models/User');
-const nodemailer = require('nodemailer');
+const { sendEmail } = require('../utils/email');
 const axios = require('axios');
 
-// Email transporter
-const getTransporter = () => nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT),
-  secure: false,
-  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-});
 
 // Replace template variables like {{contact.firstName}}
 const interpolate = (template, context) => {
@@ -59,9 +52,7 @@ const executeAction = async (action, context, orgId) => {
 
       if (!to) return { success: false, error: 'No email recipient found' };
 
-      const transporter = getTransporter();
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM,
+      await sendEmail({
         to,
         subject: interpolate(config.subject, context),
         html: interpolate(config.body, context),
