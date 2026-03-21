@@ -1,14 +1,9 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-const getTransporter = () => nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT) || 587,
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+const getResend = () => {
+  if (!process.env.RESEND_API_KEY) return null;
+  return new Resend(process.env.RESEND_API_KEY);
+};
 
 const baseTemplate = (content) => `
 <!DOCTYPE html>
@@ -35,12 +30,12 @@ const baseTemplate = (content) => `
 <body>
   <div class="wrapper">
     <div class="header">
-      <h1>${process.env.APP_NAME || 'CRM'}</h1>
+      <h1>${process.env.APP_NAME || 'Azayon'}</h1>
       <p>Business made simple</p>
     </div>
     <div class="body">${content}</div>
     <div class="footer">
-      <p>This email was sent by ${process.env.APP_NAME || 'CRM'}. If you didn't request this, you can safely ignore it.</p>
+      <p>This email was sent by ${process.env.APP_NAME || 'Azayon'}. If you didn't request this, you can safely ignore it.</p>
     </div>
   </div>
 </body>
@@ -48,18 +43,25 @@ const baseTemplate = (content) => `
 `;
 
 const sendEmail = async ({ to, subject, html }) => {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    console.warn('SMTP not configured — skipping email to:', to);
+  const resend = getResend();
+
+  if (!resend) {
+    console.warn('Resend not configured — skipping email to:', to);
     console.warn('Subject:', subject);
     return;
   }
-  const transporter = getTransporter();
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || `${process.env.APP_NAME || 'CRM'} <noreply@yourcrm.com>`,
+
+  const { error } = await resend.emails.send({
+    from: process.env.EMAIL_FROM || `${process.env.APP_NAME || 'Azayon'} <hello@azayon.com>`,
     to,
     subject,
     html,
   });
+
+  if (error) {
+    console.error('Resend error:', error);
+    throw new Error(error.message);
+  }
 };
 
 const sendVerificationEmail = async ({ to, name, token }) => {

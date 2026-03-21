@@ -53,13 +53,15 @@ const getKanban = async (req, res, next) => {
     const pipeline = await Pipeline.findOne({ _id: req.params.pipelineId, orgId: req.orgId });
     if (!pipeline) throw new AppError('Pipeline not found', 404);
 
-    const deals = await Deal.find({ pipeline: pipeline._id, orgId: req.orgId, status: 'open' })
+    const filter = { pipeline: pipeline._id, orgId: req.orgId, status: 'open' };
+    if (req.query.assignedTo) filter.assignedTo = req.query.assignedTo;
+
+    const deals = await Deal.find(filter)
       .populate('contact', 'firstName lastName email phone company')
       .populate('assignedTo', 'name email avatar')
       .sort({ updatedAt: -1 })
       .lean();
 
-    // Group deals by stage
     const kanban = pipeline.stages.map((stage) => ({
       stage,
       deals: deals.filter((d) => d.stageId.toString() === stage._id.toString()),
@@ -94,9 +96,6 @@ const getDeal = async (req, res, next) => {
 const createDeal = async (req, res, next) => {
   try {
     const { pipelineId, stageId, contactId, ...rest } = req.body;
-
-    // Strip empty strings from ObjectId fields to avoid CastErrors
-    if (!rest.assignedTo) delete rest.assignedTo;
 
     const pipeline = await Pipeline.findOne({ _id: pipelineId, orgId: req.orgId });
     if (!pipeline) throw new AppError('Pipeline not found', 404);
@@ -187,7 +186,7 @@ const updateDeal = async (req, res, next) => {
           $push: { stageHistory: { stageId, stageName: newStage.name, enteredAt: new Date() } },
         }),
       },
-      { new: true }
+      { new: true, runValidators: true }
     )
       .populate('contact', 'firstName lastName email phone company')
       .populate('assignedTo', 'name email avatar')
