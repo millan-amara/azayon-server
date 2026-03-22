@@ -211,8 +211,11 @@ router.post('/cancel', protect, async (req, res, next) => {
       console.log('Paystack cancel result:', result.message);
     }
 
-    org.subscription.status = 'cancelled';
+    // Mark as cancelling but keep features active until period ends.
+    // Paystack fires subscription.disable when the period actually ends
+    // which is when we move to cancelled status.
     org.subscription.cancelledAt = new Date();
+    org.subscription.status = 'cancelling';
     await org.save();
 
     res.json({ message: 'Subscription cancelled. You keep access until the end of your billing period.' });

@@ -33,7 +33,7 @@ const orgSchema = new mongoose.Schema({
     plan: { type: String, enum: ['free', 'growth'], default: 'free' },
     status: {
       type: String,
-      enum: ['trialing', 'active', 'past_due', 'cancelled', 'free'],
+      enum: ['trialing', 'active', 'cancelling', 'past_due', 'cancelled', 'free'],
       default: 'trialing',
     },
     trialEndsAt: { type: Date },
@@ -63,7 +63,7 @@ orgSchema.pre('save', async function () {
 orgSchema.methods.getPlanLimits = function () {
   const sub = this.subscription;
   const isOnTrial = sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt > new Date();
-  const effectivePlan = (sub.plan === 'growth' && sub.status === 'active') || isOnTrial
+  const effectivePlan = (sub.plan === 'growth' && (sub.status === 'active' || sub.status === 'cancelling')) || isOnTrial
     ? 'growth'
     : 'free';
   return { ...PLANS[effectivePlan], effectivePlan, isOnTrial };
