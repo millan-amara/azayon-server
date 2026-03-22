@@ -7,23 +7,15 @@ const { attachPlan } = require('../middleware/plan');
 const { AppError } = require('../middleware/error');
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
-const FOUNDING_MEMBER_SLOTS = 20;
 
 const PLANS = {
   growth_monthly: {
     planCode: 'PLN_gpde83h6795kusw',
     label: 'Growth — KES 3,000/month',
-    isFoundingMember: false,
   },
   growth_annual: {
     planCode: 'PLN_2f18ov066kua7eu',
     label: 'Growth — KES 25,000/year',
-    isFoundingMember: false,
-  },
-  founding_monthly: {
-    planCode: 'PLN_taurbqx34i81mkk',
-    label: 'Founding Member — KES 1,500/month',
-    isFoundingMember: true,
   },
 };
 
@@ -39,22 +31,12 @@ const paystack = async (path, method = 'GET', body = null) => {
   return res.json();
 };
 
-let foundingCountCache = { count: null, cachedAt: 0 };
-const FOUNDING_CACHE_TTL = 5 * 60 * 1000;
-
 // GET /api/billing/status
 router.get('/status', protect, attachPlan, async (req, res, next) => {
   try {
     const org = req.org;
     const limits = req.planLimits;
     const sub = org.subscription;
-
-    const now = Date.now();
-    if (foundingCountCache.count === null || now - foundingCountCache.cachedAt > FOUNDING_CACHE_TTL) {
-      foundingCountCache.count = await Org.countDocuments({ 'subscription.isFoundingMember': true });
-      foundingCountCache.cachedAt = now;
-    }
-    const foundingCount = foundingCountCache.count;
 
     res.json({
       plan: sub.plan,
@@ -65,9 +47,6 @@ router.get('/status', protect, attachPlan, async (req, res, next) => {
         ? Math.max(0, Math.ceil((new Date(sub.trialEndsAt) - new Date()) / (1000 * 60 * 60 * 24)))
         : 0,
       subscribedAt: sub.subscribedAt,
-      isFoundingMember: sub.isFoundingMember,
-      foundingMemberSlotsLeft: Math.max(0, FOUNDING_MEMBER_SLOTS - foundingCount),
-      foundingMemberAvailable: foundingCount < FOUNDING_MEMBER_SLOTS,
       limits,
     });
   } catch (err) {
@@ -84,13 +63,6 @@ router.post('/initialize', protect, async (req, res, next) => {
 
     const org = await Org.findById(req.orgId);
 
-    if (plan.isFoundingMember) {
-      const foundingCount = await Org.countDocuments({ 'subscription.isFoundingMember': true });
-      if (foundingCount >= FOUNDING_MEMBER_SLOTS) {
-        throw new AppError('Founding member slots are full', 400);
-      }
-    }
-
     const paystackRes = await paystack('/transaction/initialize', 'POST', {
       email: req.user.email,
       plan: plan.planCode,
@@ -103,6 +75,8 @@ router.post('/initialize', protect, async (req, res, next) => {
       },
       callback_url: `${process.env.CLIENT_URL}/settings?tab=billing&payment=success`,
     });
+
+    console.log('Paystack initialize response:', JSON.stringify(paystackRes));
 
     if (!paystackRes.status) {
       throw new AppError(paystackRes.message || 'Failed to initialize payment', 500);
@@ -150,18 +124,10 @@ router.post('/webhook', async (req, res) => {
       const org = await Org.findById(orgId);
       if (!org) return res.sendStatus(200);
 
-      const isFoundingMember = priceKey === 'founding_monthly';
-
       org.subscription.plan = 'growth';
       org.subscription.status = 'active';
       org.subscription.subscribedAt = new Date();
       org.subscription.trialEndsAt = null;
-
-      if (isFoundingMember) {
-        org.subscription.isFoundingMember = true;
-        org.subscription.foundingMemberPrice = 1500;
-        foundingCountCache.count = null;
-      }
 
       if (data.customer?.customer_code) {
         org.subscription.paystackCustomerCode = data.customer.customer_code;
