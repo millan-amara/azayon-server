@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Org = require('../models/Org');
 const Pipeline = require('../models/Pipeline');
+const Invite = require('../models/Invite');
 const { AppError } = require('../middleware/error');
 const {
   sendVerificationEmail,
@@ -40,6 +41,18 @@ const setTokenCookies = (res, accessToken, refreshToken) => {
 const register = async (req, res, next) => {
   try {
     const { name, email, password, orgName } = req.body;
+
+    // Block if email already exists as a user in any org
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existingUser) {
+      throw new AppError('An account with this email already exists. Please sign in or use a different email.', 409);
+    }
+
+    // Block if email has a pending invite — they should accept that instead
+    const existingInvite = await Invite.findOne({ email: email.toLowerCase().trim(), status: 'pending' });
+    if (existingInvite) {
+      throw new AppError('This email has a pending team invite. Check your inbox to accept it instead.', 409);
+    }
 
     const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const org = await Org.create({
