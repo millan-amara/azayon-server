@@ -12,10 +12,12 @@ const PLANS = {
   growth_monthly: {
     planCode: 'PLN_gpde83h6795kusw',
     label: 'Growth — KES 3,000/month',
+    amount: 299900, // in kobo — matches KES 3,000 plan in Paystack
   },
   growth_annual: {
     planCode: 'PLN_2f18ov066kua7eu',
     label: 'Growth — KES 25,000/year',
+    amount: 2499900, // in kobo — matches KES 25,000 plan in Paystack
   },
 };
 
@@ -65,6 +67,7 @@ router.post('/initialize', protect, async (req, res, next) => {
 
     const paystackRes = await paystack('/transaction/initialize', 'POST', {
       email: req.user.email,
+      amount: plan.amount,
       plan: plan.planCode,
       metadata: {
         orgId: req.orgId.toString(),
