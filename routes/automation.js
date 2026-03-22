@@ -43,9 +43,9 @@ router.post('/', requireRole('admin', 'sales_rep'), async (req, res, next) => {
       const template = TEMPLATES.find((t) => t.id === templateId);
       if (!template) throw new AppError('Template not found', 404);
 
-      // Merge template with any overrides provided
       automationData = {
         ...automationData,
+        templateId,
         name: body.name || template.name,
         description: body.description || template.description,
         trigger: body.trigger || template.trigger,

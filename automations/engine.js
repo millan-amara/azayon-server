@@ -3,9 +3,9 @@ const Task = require('../models/Task');
 const Contact = require('../models/Contact');
 const Deal = require('../models/Deal');
 const User = require('../models/User');
+const Pipeline = require('../models/Pipeline');
 const { sendEmail } = require('../utils/email');
 const axios = require('axios');
-
 
 // Replace template variables like {{contact.firstName}}
 const interpolate = (template, context) => {
@@ -19,11 +19,9 @@ const interpolate = (template, context) => {
 // Check if automation conditions pass
 const checkConditions = (conditions, context) => {
   if (!conditions || conditions.length === 0) return true;
-
   return conditions.every((cond) => {
     const [obj, key] = cond.field.split('.');
     const value = context[obj]?.[key];
-
     switch (cond.operator) {
       case 'equals': return String(value) === String(cond.value);
       case 'not_equals': return String(value) !== String(cond.value);
@@ -84,7 +82,6 @@ const executeAction = async (action, context, orgId) => {
         data: payload,
         timeout: 10000,
       });
-
       return { success: true, action: 'send_webhook', status: response.status };
     }
 
@@ -114,9 +111,6 @@ const executeAction = async (action, context, orgId) => {
     }
 
     case 'create_deal': {
-      const Deal = require('../models/Deal.model');
-      const Pipeline = require('../models/Pipeline.model');
-
       if (!context.contact?._id) return { success: false, error: 'No contact in context' };
 
       let pipeline;
@@ -129,13 +123,13 @@ const executeAction = async (action, context, orgId) => {
 
       const stage = config.stageId
         ? pipeline.stages.id(config.stageId)
-        : pipeline.stages.find((s) => !s.isWon && !s.isLost && s.order === 0);
+        : pipeline.stages.find((s) => !s.isWon && !s.isLost);
 
       if (!stage) return { success: false, error: 'No stage found' };
 
       const assignTo = config.assignTo === 'same_as_contact'
         ? context.contact?.assignedTo?._id || context.contact?.assignedTo
-        : config.assignTo || null;
+        : config.assignTo || undefined;
 
       await Deal.create({
         orgId,
@@ -145,7 +139,7 @@ const executeAction = async (action, context, orgId) => {
         stageId: stage._id,
         stageName: stage.name,
         probability: stage.probability,
-        assignedTo: assignTo || undefined,
+        assignedTo: assignTo,
         stageHistory: [{ stageId: stage._id, stageName: stage.name, enteredAt: new Date() }],
       });
       return { success: true, action: 'create_deal' };
@@ -153,7 +147,6 @@ const executeAction = async (action, context, orgId) => {
 
     case 'assign_to_user': {
       if (!config.userId) return { success: false, error: 'No userId specified' };
-
       if (context.deal?._id) {
         await Deal.findByIdAndUpdate(context.deal._id, { $set: { assignedTo: config.userId } });
       }
@@ -185,12 +178,11 @@ const executeAction = async (action, context, orgId) => {
   }
 };
 
-// Main trigger function - called from controllers
+// Main trigger function — called from controllers
 const triggerAutomation = async (triggerType, eventData) => {
   try {
     const { orgId, deal, contact, task } = eventData;
 
-    // Find active automations matching this trigger
     const automations = await Automation.find({
       orgId,
       isActive: true,
@@ -199,18 +191,37 @@ const triggerAutomation = async (triggerType, eventData) => {
 
     if (automations.length === 0) return;
 
+    // Re-fetch with populated fields so actions have access to emails, names etc.
+    let populatedDeal = deal ? (deal.toObject ? deal.toObject() : deal) : null;
+    let populatedContact = contact ? (contact.toObject ? contact.toObject() : contact) : null;
+
+    if (deal?._id) {
+      const fetched = await Deal.findById(deal._id)
+        .populate('assignedTo', 'name email')
+        .populate('contact', 'firstName lastName email phone')
+        .lean();
+      if (fetched) populatedDeal = fetched;
+    }
+
+    if (contact?._id) {
+      const fetched = await Contact.findById(contact._id)
+        .populate('assignedTo', 'name email')
+        .lean();
+      if (fetched) populatedContact = fetched;
+    }
+
     const context = {
       triggerType,
-      deal: deal ? (deal.toObject ? deal.toObject() : deal) : null,
-      contact: contact ? (contact.toObject ? contact.toObject() : contact) : null,
+      deal: populatedDeal,
+      contact: populatedContact || populatedDeal?.contact || null,
       task: task ? (task.toObject ? task.toObject() : task) : null,
     };
 
     for (const automation of automations) {
       try {
-        // Check trigger-specific config
+        // Trigger-specific config checks
         if (triggerType === 'deal.stage_changed') {
-          const { fromStageId, toStageId } = automation.trigger.config || {};
+          const { toStageId } = automation.trigger.config || {};
           if (toStageId && toStageId.toString() !== eventData.toStageId?.toString()) continue;
         }
 
@@ -221,17 +232,17 @@ const triggerAutomation = async (triggerType, eventData) => {
           if (!deal || new Date(deal.updatedAt) > cutoff) continue;
         }
 
-        // Check conditions
         if (!checkConditions(automation.conditions, context)) continue;
 
-        // Execute all actions
         const results = [];
         for (const action of automation.actions) {
           const result = await executeAction(action, context, orgId);
           results.push(result);
+          if (!result.success) {
+            console.error(`Action ${action.type} failed for automation "${automation.name}":`, result.error);
+          }
         }
 
-        // Update stats
         await Automation.findByIdAndUpdate(automation._id, {
           $inc: { runCount: 1 },
           $set: {
@@ -240,8 +251,10 @@ const triggerAutomation = async (triggerType, eventData) => {
           },
         });
 
+        console.log(`Automation "${automation.name}" ran: ${results.map((r) => r.action || r.error).join(', ')}`);
+
       } catch (err) {
-        console.error(`Automation ${automation._id} failed:`, err.message);
+        console.error(`Automation "${automation.name}" (${automation._id}) failed:`, err.message);
         await Automation.findByIdAndUpdate(automation._id, {
           $set: { lastRunStatus: 'failed', lastRunAt: new Date() },
         });

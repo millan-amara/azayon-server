@@ -89,6 +89,7 @@ const automationSchema = new mongoose.Schema({
   lastRunStatus: { type: String, enum: ['success', 'failed', 'partial'] },
 
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  templateId: { type: String }, // which template this was created from
 }, { timestamps: true });
 
 automationSchema.index({ orgId: 1, isActive: 1 });
