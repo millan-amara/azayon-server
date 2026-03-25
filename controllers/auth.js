@@ -37,10 +37,11 @@ const setTokenCookies = (res, accessToken, refreshToken) => {
   });
 };
 
+
 // POST /api/auth/register
 const register = async (req, res, next) => {
   try {
-    const { name, email, password, orgName } = req.body;
+    const { name, email, password, orgName, phone } = req.body;
 
     // Block if email already exists as a user in any org
     const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
@@ -52,6 +53,10 @@ const register = async (req, res, next) => {
     const existingInvite = await Invite.findOne({ email: email.toLowerCase().trim(), status: 'pending' });
     if (existingInvite) {
       throw new AppError('This email has a pending team invite. Check your inbox to accept it instead.', 409);
+    }
+
+    if (!phone) {
+      throw new AppError('Phone number is required', 400);
     }
 
     const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -72,6 +77,7 @@ const register = async (req, res, next) => {
       orgId: org._id,
       name,
       email,
+      phone,
       password,
       role: 'admin',
       emailVerified: false,
