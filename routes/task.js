@@ -5,6 +5,7 @@ const { AppError } = require('../middleware/error');
 const { protect } = require('../middleware/auth');
 const { triggerAutomation } = require('../automations/engine');
 const { createNotification } = require('./notification');
+const { sendTaskAssigned } = require('../utils/whatsapp');
 
 router.use(protect);
 
@@ -102,6 +103,16 @@ router.post('/', async (req, res, next) => {
         resourceId: task._id,
         io: req.app.get('io'),
       });
+
+      // Send WhatsApp if assignee has a phone
+      if (task.assignedTo.phone) {
+        sendTaskAssigned({
+          phone: task.assignedTo.phone,
+          name: task.assignedTo.name,
+          taskTitle: task.title,
+          dueDate: task.dueDate,
+        }).catch((err) => console.error('WhatsApp task assigned failed:', err.message));
+      }
     }
 
     res.status(201).json({ task });

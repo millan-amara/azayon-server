@@ -1,9 +1,11 @@
 const Deal = require('../models/Deal');
 const Contact = require('../models/Contact');
 const Pipeline = require('../models/Pipeline');
+const User = require('../models/User');
 const { AppError } = require('../middleware/error');
 const { triggerAutomation } = require('../automations/engine');
 const { createNotification } = require('./notification');
+const { sendDealAssigned } = require('../utils/whatsapp');
 
 // GET /api/deals
 const getDeals = async (req, res, next) => {
@@ -142,6 +144,16 @@ const createDeal = async (req, res, next) => {
         resourceId: deal._id,
         io: req.app.get('io'),
       });
+
+      // Send WhatsApp — need to fetch user with phone
+      const assignedUser = await User.findById(deal.assignedTo).select('name phone').lean();
+      if (assignedUser?.phone) {
+        sendDealAssigned({
+          phone: assignedUser.phone,
+          name: assignedUser.name,
+          dealTitle: deal.title,
+        }).catch((err) => console.error('WhatsApp deal assigned failed:', err.message));
+      }
     }
 
     await triggerAutomation('deal.created', { deal, orgId: req.orgId });
