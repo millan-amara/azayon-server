@@ -87,7 +87,7 @@ router.post('/', async (req, res, next) => {
     });
 
     await task.populate([
-      { path: 'assignedTo', select: 'name email avatar' },
+      { path: 'assignedTo', select: 'name email avatar phone' },
       { path: 'contact', select: 'firstName lastName email phone' },
     ]);
 
