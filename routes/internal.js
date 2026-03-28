@@ -20,17 +20,22 @@ const verifyCronSecret = (req, res, next) => {
 router.post('/send-reminders', verifyCronSecret, async (req, res, next) => {
   try {
     const now = new Date();
-    const windowEnd = new Date(now.getTime() + 6 * 60 * 1000); // 6 min window
+    const windowStart = new Date(now.getTime() - 2 * 60 * 1000); // 2 min back to catch near-misses
+    const windowEnd = new Date(now.getTime() + 6 * 60 * 1000);   // 6 min ahead matches 5-min cron
+
+    console.log(`Reminder check: ${windowStart.toISOString()} → ${windowEnd.toISOString()}`);
 
     const tasks = await Task.find({
       status: { $in: ['pending', 'in_progress'] },
-      'reminder.sendAt': { $gte: now, $lte: windowEnd },
+      'reminder.sendAt': { $gte: windowStart, $lte: windowEnd },
       'reminder.sent': { $ne: true },
     })
       .populate('assignedTo', 'name email phone')
       .populate('contact', 'firstName lastName')
       .populate('deal', 'title')
       .lean();
+
+    console.log(`Found ${tasks.length} task(s) due for reminders`);
 
     let sent = 0;
     const errors = [];
