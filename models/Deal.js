@@ -35,6 +35,9 @@ const dealSchema = new mongoose.Schema({
   tags: [{ type: String, trim: true, lowercase: true }],
   customFields: { type: Map, of: String },
 
+  // Tracks when the last inactive deal notification was sent — prevents spam
+  inactiveNotifiedAt: { type: Date, default: null },
+
   // Attachments
   attachments: [{
     publicId: { type: String, required: true },

@@ -193,7 +193,7 @@ const updateDeal = async (req, res, next) => {
     const deal = await Deal.findByIdAndUpdate(
       req.params.id,
       {
-        $set: rest,
+        $set: { ...rest, inactiveNotifiedAt: null }, // reset so inactive alert can fire again after next 3 days
         ...(stageChanged && {
           $push: { stageHistory: { stageId, stageName: newStage.name, enteredAt: new Date() } },
         }),

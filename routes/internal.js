@@ -137,21 +137,26 @@ router.post('/run-scheduled-jobs', verifyCronSecret, async (req, res, next) => {
   try {
     const results = { inactiveDeals: 0, overdueTasks: 0, errors: [] };
 
-    // 1. Check for inactive deals
+    // 1. Check for inactive deals — not updated in 3+ days AND not notified in last 24h
     const threeDaysAgo = new Date();
     threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
+    const oneDayAgo = new Date();
+    oneDayAgo.setDate(oneDayAgo.getDate() - 1);
 
     const inactiveDeals = await Deal.find({
       status: 'open',
       updatedAt: { $lt: threeDaysAgo },
+      $or: [
+        { inactiveNotifiedAt: null },
+        { inactiveNotifiedAt: { $lt: oneDayAgo } },
+      ],
     }).populate('assignedTo', 'name email phone').populate('contact');
 
     for (const deal of inactiveDeals) {
       try {
-        // Trigger automation (handles email action if configured)
         await triggerAutomation('deal.inactive', { deal, orgId: deal.orgId });
 
-        // Also send WhatsApp directly to assigned rep if they have a phone
         if (deal.assignedTo?.phone) {
           const daysSince = Math.floor((Date.now() - new Date(deal.updatedAt)) / (1000 * 60 * 60 * 24));
           sendDealInactive({
@@ -161,6 +166,9 @@ router.post('/run-scheduled-jobs', verifyCronSecret, async (req, res, next) => {
             days: daysSince,
           }).catch((err) => console.error('WhatsApp deal inactive failed:', err.message));
         }
+
+        // Mark as notified so it won't fire again for 24 hours
+        await Deal.findByIdAndUpdate(deal._id, { inactiveNotifiedAt: new Date() });
 
         results.inactiveDeals++;
       } catch (err) {
