@@ -9,6 +9,8 @@ const {
   addTimelineEntry,
   getAllTags,
   importContacts,
+  exportContacts,
+  bulkUpdateContacts,
 } = require('../controllers/contact');
 const { protect } = require('../middleware/auth');
 const { attachPlan, checkContactLimit } = require('../middleware/plan');
@@ -17,7 +19,9 @@ router.use(protect);
 router.use(attachPlan);
 
 router.get('/tags/all', getAllTags);
+router.get('/export', exportContacts);
 router.post('/import', checkContactLimit, importContacts);
+router.post('/bulk', bulkUpdateContacts);
 
 router.route('/')
   .get(getContacts)

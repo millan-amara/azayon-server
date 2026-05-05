@@ -4,6 +4,7 @@ const {
   getDeals, getKanban, getDeal,
   createDeal, updateDeal,
   markWon, markLost, deleteDeal,
+  exportDeals,
 } = require('../controllers/deal');
 const { protect } = require('../middleware/auth');
 const { attachPlan, checkDealLimit } = require('../middleware/plan');
@@ -12,6 +13,7 @@ router.use(protect);
 router.use(attachPlan);
 
 router.get('/kanban/:pipelineId', getKanban);
+router.get('/export', exportDeals);
 
 router.route('/')
   .get(getDeals)

@@ -26,6 +26,11 @@ const orgSchema = new mongoose.Schema({
     currency: { type: String, default: 'KES' },
     timezone: { type: String, default: 'Africa/Nairobi' },
     dateFormat: { type: String, default: 'DD/MM/YYYY' },
+    businessHours: {
+      start: { type: String, default: '09:00' },
+      end: { type: String, default: '17:00' },
+      workDays: { type: [Number], default: [1, 2, 3, 4, 5] }, // 0=Sun ... 6=Sat
+    },
   },
 
   // Subscription

@@ -12,7 +12,7 @@ router.use(protect);
 // GET /api/tasks
 router.get('/', async (req, res, next) => {
   try {
-    const { status, assignedTo, contactId, dealId, overdue, page = 1, limit = 20 } = req.query;
+    const { status, assignedTo, contactId, dealId, overdue, from, to, page = 1, limit = 20 } = req.query;
 
     const filter = { orgId: req.orgId };
     if (status) filter.status = status;
@@ -22,6 +22,13 @@ router.get('/', async (req, res, next) => {
     if (overdue === 'true') {
       filter.dueDate = { $lt: new Date() };
       filter.status = { $in: ['pending', 'in_progress'] };
+    }
+    // Date-range filter for calendar views (overrides overdue's dueDate)
+    if (from || to) {
+      const range = {};
+      if (from) range.$gte = new Date(from);
+      if (to) range.$lte = new Date(to);
+      filter.dueDate = range;
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);

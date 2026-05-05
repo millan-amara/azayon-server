@@ -3,6 +3,7 @@ const Deal = require('../models/Deal');
 const Task = require('../models/Task');
 const { AppError } = require('../middleware/error');
 const { triggerAutomation } = require('../automations/engine');
+const { toCsv, setCsvHeaders } = require('../utils/csv');
 
 // GET /api/contacts
 const getContacts = async (req, res, next) => {
@@ -213,6 +214,112 @@ const importContacts = async (req, res, next) => {
   }
 };
 
+// POST /api/contacts/bulk — apply an action to many contacts at once
+const bulkUpdateContacts = async (req, res, next) => {
+  try {
+    const { ids, action, payload = {} } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new AppError('No contacts selected', 400);
+    }
+    if (ids.length > 500) {
+      throw new AppError('You can update up to 500 contacts at a time', 400);
+    }
+
+    const filter = { _id: { $in: ids }, orgId: req.orgId };
+    let result;
+
+    switch (action) {
+      case 'assign':
+        // payload.assignedTo: userId | null
+        result = await Contact.updateMany(filter, {
+          $set: { assignedTo: payload.assignedTo || null },
+        });
+        break;
+
+      case 'addTag': {
+        const tag = String(payload.tag || '').trim();
+        if (!tag) throw new AppError('Tag is required', 400);
+        result = await Contact.updateMany(filter, { $addToSet: { tags: tag } });
+        break;
+      }
+
+      case 'removeTag': {
+        const tag = String(payload.tag || '').trim();
+        if (!tag) throw new AppError('Tag is required', 400);
+        result = await Contact.updateMany(filter, { $pull: { tags: tag } });
+        break;
+      }
+
+      case 'setStatus': {
+        const allowed = ['lead', 'prospect', 'customer', 'churned', 'other'];
+        if (!allowed.includes(payload.status)) {
+          throw new AppError('Invalid status', 400);
+        }
+        result = await Contact.updateMany(filter, { $set: { status: payload.status } });
+        break;
+      }
+
+      case 'archive':
+        result = await Contact.updateMany(filter, { $set: { isArchived: true } });
+        break;
+
+      default:
+        throw new AppError(`Unknown action: ${action}`, 400);
+    }
+
+    res.json({
+      updated: result.modifiedCount,
+      message: `${result.modifiedCount} contact${result.modifiedCount === 1 ? '' : 's'} updated`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/contacts/export — CSV download, respects the same filters as list
+const exportContacts = async (req, res, next) => {
+  try {
+    const { search, status, tags, assignedTo } = req.query;
+    const filter = { orgId: req.orgId, isArchived: false };
+
+    if (search) filter.$text = { $search: search };
+    if (status) filter.status = status;
+    if (tags) filter.tags = { $in: tags.split(',') };
+    if (assignedTo) filter.assignedTo = assignedTo;
+
+    const contacts = await Contact.find(filter)
+      .populate('assignedTo', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(10000)
+      .lean();
+
+    const columns = [
+      { key: 'firstName', label: 'First name' },
+      { key: 'lastName',  label: 'Last name' },
+      { key: 'email',     label: 'Email' },
+      { key: 'phone',     label: 'Phone' },
+      { key: 'company',   label: 'Company' },
+      { key: 'jobTitle',  label: 'Job title' },
+      { key: 'status',    label: 'Status' },
+      { key: 'source',    label: 'Source' },
+      { key: 'city',      label: 'City' },
+      { key: 'country',   label: 'Country' },
+      { label: 'Tags',        get: (r) => (r.tags || []).join('; ') },
+      { label: 'Assigned to', get: (r) => r.assignedTo?.name || '' },
+      { label: 'Notes',       get: (r) => r.notes || '' },
+      { label: 'Created',     get: (r) => r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : '' },
+    ];
+
+    const csv = toCsv(columns, contacts);
+    const stamp = new Date().toISOString().slice(0, 10);
+    setCsvHeaders(res, `contacts-${stamp}.csv`);
+    res.send(csv);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getContacts,
   getContact,
@@ -222,4 +329,6 @@ module.exports = {
   addTimelineEntry,
   getAllTags,
   importContacts,
+  exportContacts,
+  bulkUpdateContacts,
 };

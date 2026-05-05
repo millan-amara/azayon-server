@@ -6,6 +6,7 @@ const { AppError } = require('../middleware/error');
 const { triggerAutomation } = require('../automations/engine');
 const { createNotification } = require('./notification');
 const { sendDealAssigned } = require('../utils/whatsapp');
+const { toCsv, setCsvHeaders } = require('../utils/csv');
 
 // GET /api/deals
 const getDeals = async (req, res, next) => {
@@ -279,4 +280,52 @@ const deleteDeal = async (req, res, next) => {
   }
 };
 
-module.exports = { getDeals, getKanban, getDeal, createDeal, updateDeal, markWon, markLost, deleteDeal };
+// GET /api/deals/export — CSV download, respects same filters as list
+const exportDeals = async (req, res, next) => {
+  try {
+    const { pipelineId, stageId, status, assignedTo, contactId } = req.query;
+    const filter = { orgId: req.orgId };
+    if (status) filter.status = status;
+    if (pipelineId) filter.pipeline = pipelineId;
+    if (stageId) filter.stageId = stageId;
+    if (assignedTo) filter.assignedTo = assignedTo;
+    if (contactId) filter.contact = contactId;
+
+    const deals = await Deal.find(filter)
+      .populate('contact', 'firstName lastName email phone company')
+      .populate('assignedTo', 'name email')
+      .populate('pipeline', 'name')
+      .sort({ updatedAt: -1 })
+      .limit(10000)
+      .lean();
+
+    const columns = [
+      { key: 'title',    label: 'Title' },
+      { key: 'value',    label: 'Value' },
+      { key: 'currency', label: 'Currency' },
+      { label: 'Pipeline',          get: (r) => r.pipeline?.name || '' },
+      { key: 'stageName',           label: 'Stage' },
+      { key: 'status',              label: 'Status' },
+      { label: 'Probability %',     get: (r) => r.probability ?? '' },
+      { label: 'Contact name',      get: (r) => [r.contact?.firstName, r.contact?.lastName].filter(Boolean).join(' ') },
+      { label: 'Contact company',   get: (r) => r.contact?.company || '' },
+      { label: 'Contact email',     get: (r) => r.contact?.email || '' },
+      { label: 'Contact phone',     get: (r) => r.contact?.phone || '' },
+      { label: 'Assigned to',       get: (r) => r.assignedTo?.name || '' },
+      { label: 'Expected close',    get: (r) => r.expectedCloseDate ? new Date(r.expectedCloseDate).toISOString().slice(0, 10) : '' },
+      { label: 'Closed at',         get: (r) => r.closedAt ? new Date(r.closedAt).toISOString().slice(0, 10) : '' },
+      { key: 'lostReason',          label: 'Lost reason' },
+      { label: 'Tags',              get: (r) => (r.tags || []).join('; ') },
+      { label: 'Created',           get: (r) => r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : '' },
+    ];
+
+    const csv = toCsv(columns, deals);
+    const stamp = new Date().toISOString().slice(0, 10);
+    setCsvHeaders(res, `deals-${stamp}.csv`);
+    res.send(csv);
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { getDeals, getKanban, getDeal, createDeal, updateDeal, markWon, markLost, deleteDeal, exportDeals };
