@@ -118,4 +118,47 @@ router.post('/documents/:token/pay', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// POST /api/public/documents/:token/verify-payment
+//
+// Called by the public page after Paystack redirects the user back. We don't
+// trust the redirect alone — we hit Paystack's verify API to confirm the
+// transaction succeeded, then mark the invoice as paid. This belt-and-braces
+// approach means a missing/slow webhook never leaves an invoice stuck in
+// "pending" while the customer's money has already been taken.
+//
+// Idempotent: if the doc is already paid, we just return it.
+router.post('/documents/:token/verify-payment', async (req, res, next) => {
+  try {
+    const reference = String(req.body?.reference || '').trim();
+    if (!reference) throw new AppError('Reference is required', 400);
+
+    const doc = await getByToken(req.params.token);
+    if (doc.type !== 'invoice') throw new AppError('Not an invoice', 400);
+
+    if (doc.status === 'paid') {
+      return res.json({ document: doc.toObject() });
+    }
+
+    const result = await paystack(`/transaction/verify/${encodeURIComponent(reference)}`);
+    if (!result.status || result.data?.status !== 'success') {
+      throw new AppError('Payment not yet confirmed by Paystack', 402);
+    }
+
+    // Sanity check: the transaction's metadata should match this invoice
+    if (result.data.metadata?.documentId &&
+        result.data.metadata.documentId !== doc._id.toString()) {
+      throw new AppError('Reference does not match this invoice', 400);
+    }
+
+    doc.status = 'paid';
+    doc.paidAt = new Date();
+    doc.paidAmount = (result.data.amount || 0) / 100;
+    doc.paymentMethod = (result.data.channel === 'mobile_money' ? 'mpesa' : result.data.channel) || 'card';
+    doc.paymentReference = reference;
+    await doc.save();
+
+    res.json({ document: doc.toObject() });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
