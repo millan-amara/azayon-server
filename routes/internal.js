@@ -6,7 +6,7 @@ const User = require('../models/User');
 const Contact = require('../models/Contact');
 const Org = require('../models/Org');
 const { sendEmail } = require('../utils/email');
-const { sendTaskReminder, sendDealInactive } = require('../utils/whatsapp');
+const { sendTaskReminder } = require('../utils/whatsapp');
 const { triggerAutomation } = require('../automations/engine');
 
 const formatMoney = (amount, currency = 'KES') => {
@@ -124,7 +124,11 @@ router.post('/send-reminders', verifyCronSecret, async (req, res, next) => {
           });
         }
 
-        await Task.findByIdAndUpdate(task._id, { $set: { 'reminder.sent': true } });
+        await Task.findByIdAndUpdate(
+          task._id,
+          { $set: { 'reminder.sent': true } },
+          { timestamps: false }
+        );
         sent++;
       } catch (err) {
         errors.push({ taskId: task._id, error: err.message });
@@ -144,38 +148,44 @@ router.post('/run-scheduled-jobs', verifyCronSecret, async (req, res, next) => {
   try {
     const results = { inactiveDeals: 0, overdueTasks: 0, errors: [] };
 
-    // 1. Check for inactive deals — not updated in 3+ days AND not notified in last 24h
+    // 1. Check for inactive deals — not updated in 3+ days, AND we haven't
+    // already notified about THIS inactivity period.
+    //
+    // Dedup rule: "fire only if there's been a real update since the last
+    // notification". Comparing `inactiveNotifiedAt` to `updatedAt` (via $expr)
+    // means a deal stays silent after one ping until something actually changes
+    // on it. Pair this with `{ timestamps: false }` on the notification write
+    // below — otherwise the write itself bumps updatedAt and we ping forever.
     const threeDaysAgo = new Date();
     threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-
-    const oneDayAgo = new Date();
-    oneDayAgo.setDate(oneDayAgo.getDate() - 1);
 
     const inactiveDeals = await Deal.find({
       status: 'open',
       updatedAt: { $lt: threeDaysAgo },
-      $or: [
-        { inactiveNotifiedAt: null },
-        { inactiveNotifiedAt: { $lt: oneDayAgo } },
-      ],
+      $expr: {
+        $or: [
+          { $eq: ['$inactiveNotifiedAt', null] },
+          { $lt: ['$inactiveNotifiedAt', '$updatedAt'] },
+        ],
+      },
     }).populate('assignedTo', 'name email phone').populate('contact');
 
     for (const deal of inactiveDeals) {
       try {
+        // WhatsApp/email/task on inactive deals is now user-controlled via
+        // automations (trigger: deal.inactive, action: send_whatsapp/email/etc).
+        // No hardcoded channel — users opt in to whatever they want.
         await triggerAutomation('deal.inactive', { deal, orgId: deal.orgId });
 
-        if (deal.assignedTo?.phone) {
-          const daysSince = Math.floor((Date.now() - new Date(deal.updatedAt)) / (1000 * 60 * 60 * 24));
-          sendDealInactive({
-            phone: deal.assignedTo.phone,
-            name: deal.assignedTo.name,
-            dealTitle: deal.title,
-            days: daysSince,
-          }).catch((err) => console.error('WhatsApp deal inactive failed:', err.message));
-        }
-
-        // Mark as notified so it won't fire again for 24 hours
-        await Deal.findByIdAndUpdate(deal._id, { inactiveNotifiedAt: new Date() });
+        // Mark as notified for THIS inactivity period. `timestamps: false` is
+        // critical: without it, Mongoose bumps `updatedAt` on every write,
+        // which would make the inactivity check think the deal had fresh
+        // activity and re-fire 3 days later in an infinite loop.
+        await Deal.findByIdAndUpdate(
+          deal._id,
+          { inactiveNotifiedAt: new Date() },
+          { timestamps: false }
+        );
 
         results.inactiveDeals++;
       } catch (err) {
@@ -193,7 +203,13 @@ router.post('/run-scheduled-jobs', verifyCronSecret, async (req, res, next) => {
     for (const task of overdueTasks) {
       try {
         await triggerAutomation('task.overdue', { task, orgId: task.orgId });
-        await Task.findByIdAndUpdate(task._id, { $set: { reminderSent: true } });
+        // Same reasoning as deal.inactive: don't let a system-flag write
+        // disguise itself as user activity by bumping updatedAt.
+        await Task.findByIdAndUpdate(
+          task._id,
+          { $set: { reminderSent: true } },
+          { timestamps: false }
+        );
         results.overdueTasks++;
       } catch (err) {
         results.errors.push({ type: 'task.overdue', id: task._id, error: err.message });

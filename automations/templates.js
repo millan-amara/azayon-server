@@ -27,7 +27,7 @@ const AUTOMATION_TEMPLATES = [
   {
     id: 'follow_up_cold_deal',
     name: 'Follow up when a deal goes cold',
-    description: 'Creates a task and emails the deal owner when a deal has had no activity for 3 days',
+    description: 'Creates a task, emails the deal owner, and sends a WhatsApp ping when a deal has had no activity for 3 days',
     category: 'core',
     icon: '🥶',
     trigger: { type: 'deal.inactive', config: { inactiveDays: 3 } },
@@ -49,6 +49,13 @@ const AUTOMATION_TEMPLATES = [
           to: 'assigned_user',
           subject: 'Deal going cold: {{deal.title}}',
           body: '<p>Hi,</p><p>Your deal <strong>{{deal.title}}</strong> with {{contact.firstName}} {{contact.lastName}} has had no activity for 3 days. It may need your attention.</p><p>Log in to take action before you lose the opportunity.</p>',
+        },
+      },
+      {
+        type: 'send_whatsapp',
+        config: {
+          whatsappTemplate: 'deal_inactive',
+          whatsappTo: 'assigned_user',
         },
       },
     ],

@@ -330,7 +330,80 @@ const declineQuote = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// POST /api/documents/:id/convert-to-invoice
+// Clones an accepted/sent/viewed quote into a fresh invoice draft so the user
+// doesn't have to retype line items. Idempotent-ish: if the quote was already
+// converted, returns the existing invoice instead of creating a duplicate.
+const convertQuoteToInvoice = async (req, res, next) => {
+  try {
+    const quote = await Document.findOne({ _id: req.params.id, orgId: req.orgId });
+    if (!quote) throw new AppError('Quote not found', 404);
+    if (quote.type !== 'quote') throw new AppError('Only quotes can be converted to invoices', 400);
+    if (['declined', 'expired', 'cancelled'].includes(quote.status)) {
+      throw new AppError(`Cannot convert a ${quote.status} quote`, 400);
+    }
+
+    // Already converted? Return the existing invoice.
+    if (quote.convertedToInvoiceId) {
+      const existing = await Document.findOne({
+        _id: quote.convertedToInvoiceId,
+        orgId: req.orgId,
+      });
+      if (existing) return res.json({ document: existing, alreadyConverted: true });
+      // The linked invoice was deleted; fall through and create a new one.
+    }
+
+    const number = await nextNumber(req.orgId, 'invoice');
+
+    const invoice = new Document({
+      orgId: req.orgId,
+      type: 'invoice',
+      number,
+      contact: quote.contact,
+      deal:    quote.deal,
+
+      // Customer + issuer snapshots carry over verbatim
+      customerName:    quote.customerName,
+      customerEmail:   quote.customerEmail,
+      customerPhone:   quote.customerPhone,
+      customerCompany: quote.customerCompany,
+      customerAddress: quote.customerAddress,
+      fromBusinessName: quote.fromBusinessName,
+      fromEmail:        quote.fromEmail,
+      fromPhone:        quote.fromPhone,
+      fromAddress:      quote.fromAddress,
+
+      // Line items — deep-clone to detach from the quote's documents
+      items: (quote.items || []).map((it) => ({
+        description: it.description,
+        quantity:    it.quantity,
+        unitPrice:   it.unitPrice,
+        amount:      0, // recomputed below
+      })),
+      taxRate:  quote.taxRate,
+      currency: quote.currency,
+
+      // Reset everything else — this is a fresh draft the user can review and send
+      status: 'draft',
+      notes:  quote.notes,
+
+      convertedFromQuoteId: quote._id,
+      createdBy: req.user._id,
+    });
+
+    invoice.recomputeTotals();
+    await invoice.save();
+
+    quote.convertedToInvoiceId = invoice._id;
+    await quote.save();
+
+    emitToOrg(req, 'document.created', { documentId: invoice._id, type: 'invoice' });
+    res.status(201).json({ document: invoice });
+  } catch (err) { next(err); }
+};
+
 module.exports = {
   listDocuments, getDocument, createDocument, updateDocument, deleteDocument,
   downloadDocumentPdf, sendDocument, markPaid, acceptQuote, declineQuote,
+  convertQuoteToInvoice,
 };

@@ -72,6 +72,11 @@ const documentSchema = new mongoose.Schema({
   // Public access — customer-facing URL uses this token
   publicToken: { type: String, unique: true, sparse: true, index: true },
 
+  // Quote → Invoice traceability. Set on the source quote when it's converted,
+  // points to the invoice on the other side. Prevents double-conversion.
+  convertedToInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Document' },
+  convertedFromQuoteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Document' },
+
   // Notes
   notes:         { type: String }, // shown on document
   internalNotes: { type: String }, // private to team

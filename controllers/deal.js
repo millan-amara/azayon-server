@@ -8,6 +8,7 @@ const { createNotification } = require('./notification');
 const { sendDealAssigned } = require('../utils/whatsapp');
 const { toCsv, setCsvHeaders } = require('../utils/csv');
 const { emitToOrg } = require('../utils/socket');
+const { getAllowedPipelineIds, userCanAccessPipeline } = require('../utils/pipelineAccess');
 
 // GET /api/deals
 const getDeals = async (req, res, next) => {
@@ -24,10 +25,24 @@ const getDeals = async (req, res, next) => {
 
     const filter = { orgId: req.orgId };
     if (status) filter.status = status;
-    if (pipelineId) filter.pipeline = pipelineId;
     if (stageId) filter.stageId = stageId;
     if (assignedTo) filter.assignedTo = assignedTo;
     if (contactId) filter.contact = contactId;
+
+    // Restrict to pipelines this user can see. If they asked for a specific
+    // pipeline they can't access, return an empty list (rather than 403) so
+    // the kanban/list UI handles it gracefully — same as filtering to
+    // a non-existent pipeline today.
+    const allowedIds = await getAllowedPipelineIds(req.user, req.orgId);
+    if (pipelineId) {
+      const allowed = allowedIds.some((id) => id.toString() === pipelineId.toString());
+      if (!allowed) {
+        return res.json({ deals: [], pagination: { total: 0, page: parseInt(page), limit: parseInt(limit), pages: 0 } });
+      }
+      filter.pipeline = pipelineId;
+    } else {
+      filter.pipeline = { $in: allowedIds };
+    }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
@@ -56,6 +71,10 @@ const getKanban = async (req, res, next) => {
   try {
     const pipeline = await Pipeline.findOne({ _id: req.params.pipelineId, orgId: req.orgId });
     if (!pipeline) throw new AppError('Pipeline not found', 404);
+    if (!userCanAccessPipeline(req.user, pipeline)) {
+      // 404 not 403 — don't reveal restricted pipeline existence
+      throw new AppError('Pipeline not found', 404);
+    }
 
     const filter = { pipeline: pipeline._id, orgId: req.orgId, status: 'open' };
     if (req.query.assignedTo) filter.assignedTo = req.query.assignedTo;
@@ -86,10 +105,13 @@ const getDeal = async (req, res, next) => {
     const deal = await Deal.findOne({ _id: req.params.id, orgId: req.orgId })
       .populate('contact', 'firstName lastName email phone company whatsappUrl')
       .populate('assignedTo', 'name email avatar')
-      .populate('pipeline', 'name stages')
+      .populate('pipeline', 'name stages visibility allowedUsers')
       .populate('createdBy', 'name email');
 
     if (!deal) throw new AppError('Deal not found', 404);
+    if (!userCanAccessPipeline(req.user, deal.pipeline)) {
+      throw new AppError('Deal not found', 404);
+    }
     res.json({ deal });
   } catch (error) {
     next(error);
@@ -103,6 +125,9 @@ const createDeal = async (req, res, next) => {
 
     const pipeline = await Pipeline.findOne({ _id: pipelineId, orgId: req.orgId });
     if (!pipeline) throw new AppError('Pipeline not found', 404);
+    if (!userCanAccessPipeline(req.user, pipeline)) {
+      throw new AppError('You do not have access to this pipeline', 403);
+    }
 
     const stage = pipeline.stages.id(stageId);
     if (!stage) throw new AppError('Stage not found', 404);
@@ -311,6 +336,9 @@ const importDeals = async (req, res, next) => {
 
     const pipeline = await Pipeline.findOne({ _id: pipelineId, orgId: req.orgId });
     if (!pipeline) throw new AppError('Pipeline not found', 404);
+    if (!userCanAccessPipeline(req.user, pipeline)) {
+      throw new AppError('You do not have access to this pipeline', 403);
+    }
 
     const defaultStage = defaultStageId ? pipeline.stages.id(defaultStageId) : null;
     if (!defaultStage) throw new AppError('Default stage is required', 400);
@@ -404,10 +432,23 @@ const exportDeals = async (req, res, next) => {
     const { pipelineId, stageId, status, assignedTo, contactId } = req.query;
     const filter = { orgId: req.orgId };
     if (status) filter.status = status;
-    if (pipelineId) filter.pipeline = pipelineId;
     if (stageId) filter.stageId = stageId;
     if (assignedTo) filter.assignedTo = assignedTo;
     if (contactId) filter.contact = contactId;
+
+    // Same pipeline-visibility gate as getDeals — keeps the export from
+    // leaking deals from a restricted pipeline.
+    const allowedIds = await getAllowedPipelineIds(req.user, req.orgId);
+    if (pipelineId) {
+      const allowed = allowedIds.some((id) => id.toString() === pipelineId.toString());
+      if (!allowed) {
+        setCsvHeaders(res, `deals-${new Date().toISOString().slice(0, 10)}.csv`);
+        return res.send(toCsv([{ key: 'title', label: 'Title' }], []));
+      }
+      filter.pipeline = pipelineId;
+    } else {
+      filter.pipeline = { $in: allowedIds };
+    }
 
     const deals = await Deal.find(filter)
       .populate('contact', 'firstName lastName email phone company')

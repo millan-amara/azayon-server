@@ -5,14 +5,21 @@ const Deal = require('../models/Deal');
 const User = require('../models/User');
 const Pipeline = require('../models/Pipeline');
 const { sendEmail } = require('../utils/email');
+const { sendDealInactive, sendDealAssigned, sendTaskReminder, sendTaskAssigned } = require('../utils/whatsapp');
 const axios = require('axios');
 
-// Replace template variables like {{contact.firstName}}
+// Replace template variables like {{contact.firstName}} or
+// {{deal.contact.firstName}} (deep paths). If a segment of the path is
+// missing or undefined, the original {{...}} is left in place so the user
+// can spot the typo rather than seeing "undefined" in their email.
 const interpolate = (template, context) => {
   if (!template) return '';
-  return template.replace(/\{\{(\w+\.\w+)\}\}/g, (match, path) => {
-    const [obj, key] = path.split('.');
-    return context[obj]?.[key] ?? match;
+  return template.replace(/\{\{([\w.]+)\}\}/g, (match, path) => {
+    const value = path.split('.').reduce(
+      (acc, key) => (acc == null ? acc : acc[key]),
+      context,
+    );
+    return value == null || value === '' ? match : value;
   });
 };
 
@@ -20,8 +27,11 @@ const interpolate = (template, context) => {
 const checkConditions = (conditions, context) => {
   if (!conditions || conditions.length === 0) return true;
   return conditions.every((cond) => {
-    const [obj, key] = cond.field.split('.');
-    const value = context[obj]?.[key];
+    // Walk arbitrarily deep: 'deal.contact.tags' resolves through populated refs
+    const value = cond.field.split('.').reduce(
+      (acc, key) => (acc == null ? acc : acc[key]),
+      context,
+    );
     switch (cond.operator) {
       case 'equals': return String(value) === String(cond.value);
       case 'not_equals': return String(value) !== String(cond.value);
@@ -85,6 +95,43 @@ const executeAction = async (action, context, orgId) => {
       return { success: true, action: 'send_webhook', status: response.status };
     }
 
+    case 'send_whatsapp': {
+      const recipient = config.whatsappTo === 'contact'
+        ? context.contact
+        : context.deal?.assignedTo || context.contact?.assignedTo;
+
+      const phone = recipient?.phone;
+      const name = recipient?.name || recipient?.firstName || '';
+      if (!phone) return { success: false, error: 'No phone number for WhatsApp recipient' };
+
+      switch (config.whatsappTemplate) {
+        case 'deal_inactive': {
+          if (!context.deal) return { success: false, error: 'No deal in context' };
+          const days = Math.floor((Date.now() - new Date(context.deal.updatedAt)) / 86400000);
+          await sendDealInactive({ phone, name, dealTitle: context.deal.title, days });
+          break;
+        }
+        case 'deal_assigned': {
+          if (!context.deal) return { success: false, error: 'No deal in context' };
+          await sendDealAssigned({ phone, name, dealTitle: context.deal.title });
+          break;
+        }
+        case 'task_reminder': {
+          if (!context.task) return { success: false, error: 'No task in context' };
+          await sendTaskReminder({ phone, name, taskTitle: context.task.title, dueDate: context.task.dueDate });
+          break;
+        }
+        case 'task_assigned': {
+          if (!context.task) return { success: false, error: 'No task in context' };
+          await sendTaskAssigned({ phone, name, taskTitle: context.task.title, dueDate: context.task.dueDate });
+          break;
+        }
+        default:
+          return { success: false, error: `Unknown WhatsApp template: ${config.whatsappTemplate}` };
+      }
+      return { success: true, action: 'send_whatsapp', to: phone };
+    }
+
     case 'create_task': {
       const assignTo = config.assignTo === 'same_as_deal'
         ? context.deal?.assignedTo?._id || context.deal?.assignedTo
@@ -131,7 +178,7 @@ const executeAction = async (action, context, orgId) => {
         ? context.contact?.assignedTo?._id || context.contact?.assignedTo
         : config.assignTo || undefined;
 
-      await Deal.create({
+      const newDeal = await Deal.create({
         orgId,
         title: interpolate(config.dealTitle || 'New deal: {{contact.firstName}} {{contact.lastName}}', context),
         contact: context.contact._id,
@@ -142,18 +189,34 @@ const executeAction = async (action, context, orgId) => {
         assignedTo: assignTo,
         stageHistory: [{ stageId: stage._id, stageName: stage.name, enteredAt: new Date() }],
       });
+
+      // Chain: any deal.created automations should fire on this new deal too,
+      // otherwise "new contact → auto-create deal → auto-create task on
+      // new deals" silently breaks at the second hop.
+      await triggerAutomation('deal.created', { deal: newDeal, orgId });
+
       return { success: true, action: 'create_deal' };
     }
 
     case 'assign_to_user': {
       if (!config.userId) return { success: false, error: 'No userId specified' };
-      if (context.deal?._id) {
+
+      // Follow the trigger's subject — a deal.* trigger should only re-own the
+      // deal, not also reassign the linked contact (which the user almost
+      // certainly didn't ask for). For contact.* triggers, just the contact.
+      // Falls back to whichever entity is in context if the trigger prefix
+      // isn't deal/contact (shouldn't happen today but is the safer default).
+      const subject = context.triggerType?.split('.')[0];
+
+      if (subject === 'deal' && context.deal?._id) {
         await Deal.findByIdAndUpdate(context.deal._id, { $set: { assignedTo: config.userId } });
+        return { success: true, action: 'assign_to_user', target: 'deal' };
       }
-      if (context.contact?._id) {
+      if (subject === 'contact' && context.contact?._id) {
         await Contact.findByIdAndUpdate(context.contact._id, { $set: { assignedTo: config.userId } });
+        return { success: true, action: 'assign_to_user', target: 'contact' };
       }
-      return { success: true, action: 'assign_to_user' };
+      return { success: false, error: `assign_to_user not applicable for trigger ${context.triggerType}` };
     }
 
     case 'add_tag': {
@@ -243,11 +306,28 @@ const triggerAutomation = async (triggerType, eventData) => {
           }
         }
 
+        const status = results.every((r) => r.success) ? 'success' : 'partial';
+        const runAt = new Date();
+
         await Automation.findByIdAndUpdate(automation._id, {
           $inc: { runCount: 1 },
-          $set: {
-            lastRunAt: new Date(),
-            lastRunStatus: results.every((r) => r.success) ? 'success' : 'partial',
+          $set: { lastRunAt: runAt, lastRunStatus: status },
+          // $push + $slice keeps the most recent 20 runs and drops the rest in
+          // a single atomic update — no read-modify-write race window.
+          $push: {
+            recentRuns: {
+              $each: [{
+                at: runAt,
+                status,
+                actions: results.map((r, i) => ({
+                  type: automation.actions[i]?.type,
+                  success: !!r.success,
+                  error: r.success ? undefined : r.error,
+                })),
+              }],
+              $position: 0,
+              $slice: 20,
+            },
           },
         });
 
@@ -257,6 +337,13 @@ const triggerAutomation = async (triggerType, eventData) => {
         console.error(`Automation "${automation.name}" (${automation._id}) failed:`, err.message);
         await Automation.findByIdAndUpdate(automation._id, {
           $set: { lastRunStatus: 'failed', lastRunAt: new Date() },
+          $push: {
+            recentRuns: {
+              $each: [{ at: new Date(), status: 'failed', error: err.message, actions: [] }],
+              $position: 0,
+              $slice: 20,
+            },
+          },
         });
       }
     }
@@ -265,4 +352,49 @@ const triggerAutomation = async (triggerType, eventData) => {
   }
 };
 
-module.exports = { triggerAutomation, interpolate };
+// Run ONE automation against a provided context. Used by the test-run endpoint
+// so the user can validate an automation end-to-end without waiting for the
+// real trigger to fire. Side effects (emails, webhooks, task creation) ARE
+// executed — that's the point. The run is recorded in `recentRuns` with
+// `isTest: true` so the user can tell test runs apart from real ones.
+const testRunAutomation = async (automation, context) => {
+  const orgId = automation.orgId;
+  const fullContext = { triggerType: automation.trigger?.type, ...context };
+
+  if (!checkConditions(automation.conditions, fullContext)) {
+    return { ran: false, reason: 'Conditions did not pass for the chosen entity' };
+  }
+
+  const results = [];
+  for (const action of automation.actions) {
+    const result = await executeAction(action, fullContext, orgId);
+    results.push(result);
+  }
+
+  const status = results.every((r) => r.success) ? 'success' : 'partial';
+  const runAt = new Date();
+
+  await Automation.findByIdAndUpdate(automation._id, {
+    $set: { lastRunAt: runAt, lastRunStatus: status },
+    $push: {
+      recentRuns: {
+        $each: [{
+          at: runAt,
+          status,
+          isTest: true,
+          actions: results.map((r, i) => ({
+            type: automation.actions[i]?.type,
+            success: !!r.success,
+            error: r.success ? undefined : r.error,
+          })),
+        }],
+        $position: 0,
+        $slice: 20,
+      },
+    },
+  });
+
+  return { ran: true, status, results };
+};
+
+module.exports = { triggerAutomation, interpolate, testRunAutomation };

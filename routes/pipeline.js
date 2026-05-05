@@ -4,13 +4,17 @@ const Pipeline = require('../models/Pipeline');
 const { AppError } = require('../middleware/error');
 const { protect, requireRole } = require('../middleware/auth');
 const { emitToOrg } = require('../utils/socket');
+const { pipelineVisibilityFilter, userCanAccessPipeline } = require('../utils/pipelineAccess');
 
 router.use(protect);
 
 // GET all pipelines for org
 router.get('/', async (req, res, next) => {
   try {
-    const pipelines = await Pipeline.find({ orgId: req.orgId }).lean();
+    const pipelines = await Pipeline.find({
+      orgId: req.orgId,
+      ...pipelineVisibilityFilter(req.user),
+    }).lean();
     res.json({ pipelines });
   } catch (error) { next(error); }
 });
@@ -20,6 +24,11 @@ router.get('/:id', async (req, res, next) => {
   try {
     const pipeline = await Pipeline.findOne({ _id: req.params.id, orgId: req.orgId });
     if (!pipeline) throw new AppError('Pipeline not found', 404);
+    if (!userCanAccessPipeline(req.user, pipeline)) {
+      // 404 (not 403) so we don't leak the existence of restricted pipelines
+      // to users who shouldn't know about them.
+      throw new AppError('Pipeline not found', 404);
+    }
     res.json({ pipeline });
   } catch (error) { next(error); }
 });

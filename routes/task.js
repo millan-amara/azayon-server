@@ -161,6 +161,18 @@ router.put('/:id', async (req, res, next) => {
       updates.reminder = null; // clear reminder
     }
 
+    // Reset the overdue-cron flag (`reminderSent`, separate from
+    // `reminder.sent`) when the task is pushed forward or revived from
+    // completed. Without this, a task that goes overdue once never gets
+    // re-flagged after being rescheduled — the user thinks the cron is broken.
+    const dueDateChanged = updates.dueDate &&
+      new Date(updates.dueDate).getTime() !== new Date(previous.dueDate).getTime();
+    const revivedFromCompleted = previous.status === 'completed' &&
+      updates.status && updates.status !== 'completed';
+    if (dueDateChanged || revivedFromCompleted) {
+      updates.reminderSent = false;
+    }
+
     const task = await Task.findOneAndUpdate(
       { _id: req.params.id, orgId: req.orgId },
       { $set: updates },

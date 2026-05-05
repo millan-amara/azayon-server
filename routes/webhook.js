@@ -96,6 +96,8 @@ router.post('/deals', async (req, res, next) => {
       stageHistory: [{ stageId: stage._id, stageName: stage.name, enteredAt: new Date() }],
     });
 
+    await triggerAutomation('deal.created', { deal, orgId: req.orgId });
+
     emitToOrg(req, 'deal.created', { dealId: deal._id, pipelineId: pipeline._id });
 
     res.status(201).json({ success: true, deal: { _id: deal._id, title: deal.title } });

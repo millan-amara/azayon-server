@@ -187,9 +187,16 @@ const getAllTags = async (req, res, next) => {
 };
 
 // POST /api/contacts/import
+//
+// Automation policy: by default, CSV imports do NOT fire `contact.created`
+// automations. The reasoning: a 500-row import would otherwise spawn 500
+// follow-up tasks, 500 emails, 500 webhooks — the kind of thing that gets
+// users' Mailgun account flagged. Manual create and n8n create both still fire.
+// If the importer genuinely wants automations to run, they pass
+// `triggerAutomations: true` and accept the consequences.
 const importContacts = async (req, res, next) => {
   try {
-    const { contacts } = req.body; // array of contact objects from parsed CSV
+    const { contacts, triggerAutomations = false } = req.body;
 
     if (!Array.isArray(contacts) || contacts.length === 0) {
       throw new AppError('No contacts provided', 400);
@@ -208,10 +215,20 @@ const importContacts = async (req, res, next) => {
 
     const result = await Contact.insertMany(docs, { ordered: false });
 
+    if (triggerAutomations) {
+      // Run sequentially, not in parallel — a hundred concurrent automation
+      // chains would hammer the DB and any external webhooks.
+      for (const contact of result) {
+        await triggerAutomation('contact.created', { contact, orgId: req.orgId })
+          .catch((err) => console.error(`Automation trigger failed for imported contact ${contact._id}:`, err.message));
+      }
+    }
+
     emitToOrg(req, 'contacts.imported', { count: result.length });
 
     res.json({
       imported: result.length,
+      automationsTriggered: triggerAutomations,
       message: `Successfully imported ${result.length} contacts`,
     });
   } catch (error) {

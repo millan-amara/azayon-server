@@ -15,6 +15,7 @@ const TRIGGER_TYPES = [
 const ACTION_TYPES = [
   'send_email',
   'send_webhook',
+  'send_whatsapp',
   'create_task',
   'create_deal',
   'assign_to_user',
@@ -41,6 +42,10 @@ const actionSchema = new mongoose.Schema({
     method: { type: String, enum: ['POST', 'GET'], default: 'POST' },
     headers: { type: Map, of: String },
     payload: mongoose.Schema.Types.Mixed, // custom payload or 'full_context'
+
+    // send_whatsapp — uses pre-approved Meta templates from utils/whatsapp.js
+    whatsappTemplate: { type: String, enum: ['deal_inactive', 'deal_assigned', 'task_reminder', 'task_assigned'] },
+    whatsappTo: String, // 'assigned_user' | 'contact'
 
     // create_task
     taskTitle: String,
@@ -87,6 +92,26 @@ const automationSchema = new mongoose.Schema({
   runCount: { type: Number, default: 0 },
   lastRunAt: { type: Date },
   lastRunStatus: { type: String, enum: ['success', 'failed', 'partial'] },
+
+  // Last 20 runs, newest first. Capped via $push + $slice in the engine so the
+  // doc never grows unboundedly. Stored inline (not a separate collection)
+  // because the UI always needs them alongside the automation, and 20 small
+  // entries × N automations per org is well under any document-size concern.
+  recentRuns: {
+    type: [{
+      at: { type: Date, default: Date.now },
+      status: { type: String, enum: ['success', 'failed', 'partial'] },
+      isTest: { type: Boolean, default: false }, // true when triggered via "Test run" button
+      // Per-action results — a partial run might have 1 success + 1 failure
+      actions: [{
+        type: { type: String },     // action type that ran
+        success: Boolean,
+        error: String,              // populated when success=false
+      }],
+      error: String, // top-level error (when the whole run threw, not a specific action)
+    }],
+    default: [],
+  },
 
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   templateId: { type: String }, // which template this was created from

@@ -15,6 +15,16 @@ const pipelineSchema = new mongoose.Schema({
   isDefault: { type: Boolean, default: false },
   stages: [stageSchema],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+  // Visibility:
+  //   'org'        — everyone in the org can see and use this pipeline (default,
+  //                  matches pre-feature behaviour for existing docs).
+  //   'restricted' — only users in `allowedUsers` (plus admins, who bypass the
+  //                  filter so they can manage everything).
+  // Enforcement lives in utils/pipelineAccess.js — both pipeline routes and
+  // deal routes consult it so a deal in a hidden pipeline is also hidden.
+  visibility: { type: String, enum: ['org', 'restricted'], default: 'org' },
+  allowedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 }, { timestamps: true });
 
 // Default pipeline stages seeded on creation
