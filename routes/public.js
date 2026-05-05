@@ -66,17 +66,35 @@ router.get('/documents/:token/pdf', async (req, res, next) => {
 });
 
 // POST /api/public/documents/:token/pay — initialise Paystack checkout (no auth)
+//
+// If the invoice was created without a customer email (common when contacts
+// are phone-only), the customer can supply one in the request body. We then
+// snapshot it onto the invoice so the next pay-attempt skips the prompt.
 router.post('/documents/:token/pay', async (req, res, next) => {
   try {
     const doc = await getByToken(req.params.token);
     if (doc.type !== 'invoice') throw new AppError('Only invoices can be paid online', 400);
     if (doc.status === 'paid') throw new AppError('This invoice is already paid', 400);
-    if (!doc.customerEmail) throw new AppError('Customer email is required to pay online', 400);
+
+    const providedEmail = String(req.body?.email || '').trim().toLowerCase();
+    // Quick sanity: looks like an email at all
+    const validProvided = providedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(providedEmail);
+
+    const email = doc.customerEmail || (validProvided ? providedEmail : '');
+    if (!email) {
+      throw new AppError('Please enter a valid email to receive your receipt', 400);
+    }
+
+    // Persist the customer-supplied email so future pay attempts work without re-asking
+    if (!doc.customerEmail && validProvided) {
+      doc.customerEmail = providedEmail;
+      await doc.save();
+    }
 
     const baseUrl = process.env.CLIENT_URL || 'https://app.azayon.com';
 
     const result = await paystack('/transaction/initialize', 'POST', {
-      email: doc.customerEmail,
+      email,
       // Paystack amounts are in the smallest currency unit. KES uses kobo-equivalents (×100).
       amount: Math.round(Number(doc.total) * 100),
       currency: doc.currency || 'KES',
