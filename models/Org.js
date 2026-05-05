@@ -40,6 +40,18 @@ const orgSchema = new mongoose.Schema({
     skipped:     { type: Boolean, default: false },
   },
 
+  // Optional Paystack Subaccount for receiving customer payments directly to
+  // the org's bank account. When set, online invoice payments are routed to
+  // this subaccount; funds never touch the platform's Paystack balance.
+  paystackSubaccount: {
+    code:          { type: String },          // 'ACCT_xxx' from Paystack
+    businessName:  { type: String },          // cached for display
+    bankName:      { type: String },          // cached, e.g. 'Equity Bank'
+    bankCode:      { type: String },          // Paystack's bank code, e.g. '068'
+    accountLast4:  { type: String },          // last 4 digits, never the full number
+    connectedAt:   { type: Date },
+  },
+
   // Subscription
   subscription: {
     plan: { type: String, enum: ['free', 'growth'], default: 'free' },

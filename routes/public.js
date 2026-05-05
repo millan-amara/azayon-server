@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Document = require('../models/Document');
+const Org = require('../models/Org');
 const { renderDocumentPdf } = require('../utils/pdf');
 const { AppError } = require('../middleware/error');
 
@@ -48,10 +49,15 @@ router.get('/documents/:token', async (req, res, next) => {
       await doc.save();
     }
 
+    // Whether the issuing business has a Paystack Subaccount connected — drives
+    // whether the public page can show the "Pay online" button.
+    const org = await Org.findById(doc.orgId).select('paystackSubaccount.code').lean();
+    const orgHasOnlinePayment = !!org?.paystackSubaccount?.code;
+
     // Strip internal-only fields
     const { internalNotes, orgId, createdBy, ...safe } = doc.toObject();
     void internalNotes; void orgId; void createdBy;
-    res.json({ document: safe });
+    res.json({ document: safe, orgHasOnlinePayment });
   } catch (err) { next(err); }
 });
 
@@ -91,6 +97,18 @@ router.post('/documents/:token/pay', async (req, res, next) => {
       await doc.save();
     }
 
+    // The merchant must have connected a Paystack Subaccount, otherwise we
+    // can't route the funds to them. Refuse rather than letting money land
+    // in the platform's account.
+    const org = await Org.findById(doc.orgId).select('paystackSubaccount').lean();
+    const subaccountCode = org?.paystackSubaccount?.code;
+    if (!subaccountCode) {
+      throw new AppError(
+        'Online payment is not set up for this business yet. Please pay using the contact details on the invoice.',
+        400
+      );
+    }
+
     const baseUrl = process.env.CLIENT_URL || 'https://app.azayon.com';
 
     const result = await paystack('/transaction/initialize', 'POST', {
@@ -98,11 +116,16 @@ router.post('/documents/:token/pay', async (req, res, next) => {
       // Paystack amounts are in the smallest currency unit. KES uses kobo-equivalents (×100).
       amount: Math.round(Number(doc.total) * 100),
       currency: doc.currency || 'KES',
+      // Route the funds straight to the merchant's bank account. `bearer: subaccount`
+      // means Paystack's transaction fee comes off their side, not the platform's.
+      subaccount: subaccountCode,
+      bearer: 'subaccount',
       metadata: {
         type: 'document',
         documentId: doc._id.toString(),
         documentNumber: doc.number,
         orgId: doc.orgId.toString(),
+        subaccount: subaccountCode,
       },
       callback_url: `${baseUrl}/i/${doc.publicToken}?paid=success`,
     });

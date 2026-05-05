@@ -37,6 +37,7 @@ const customFieldRoutes = require('./routes/customField');
 const reportsRoutes = require('./routes/reports');
 const customerRoutes = require('./routes/customer');
 const savedViewRoutes = require('./routes/savedView');
+const paymentsRoutes = require('./routes/payments');
 const { attachPlan } = require('./middleware/plan');
 
 const { errorHandler } = require('./middleware/error');
@@ -124,6 +125,7 @@ app.use('/api/custom-fields', restrictViewer, customFieldRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/saved-views', savedViewRoutes);
+app.use('/api/payments', paymentsRoutes);
 app.use('/api/public', publicRoutes);
 
 // Health check
