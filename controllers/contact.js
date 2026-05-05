@@ -4,6 +4,7 @@ const Task = require('../models/Task');
 const { AppError } = require('../middleware/error');
 const { triggerAutomation } = require('../automations/engine');
 const { toCsv, setCsvHeaders } = require('../utils/csv');
+const { emitToOrg } = require('../utils/socket');
 
 // GET /api/contacts
 const getContacts = async (req, res, next) => {
@@ -101,6 +102,8 @@ const createContact = async (req, res, next) => {
     // Trigger automations
     await triggerAutomation('contact.created', { contact, orgId: req.orgId });
 
+    emitToOrg(req, 'contact.created', { contactId: contact._id });
+
     res.status(201).json({ contact });
   } catch (error) {
     next(error);
@@ -118,6 +121,8 @@ const updateContact = async (req, res, next) => {
 
     if (!contact) throw new AppError('Contact not found', 404);
 
+    emitToOrg(req, 'contact.updated', { contactId: contact._id });
+
     res.json({ contact });
   } catch (error) {
     next(error);
@@ -133,6 +138,9 @@ const deleteContact = async (req, res, next) => {
       { new: true }
     );
     if (!contact) throw new AppError('Contact not found', 404);
+
+    emitToOrg(req, 'contact.archived', { contactId: contact._id });
+
     res.json({ message: 'Contact archived' });
   } catch (error) {
     next(error);
@@ -159,6 +167,8 @@ const addTimelineEntry = async (req, res, next) => {
     );
 
     if (!contact) throw new AppError('Contact not found', 404);
+
+    emitToOrg(req, 'contact.updated', { contactId: contact._id });
 
     res.json({ timeline: contact.timeline });
   } catch (error) {
@@ -198,12 +208,15 @@ const importContacts = async (req, res, next) => {
 
     const result = await Contact.insertMany(docs, { ordered: false });
 
+    emitToOrg(req, 'contacts.imported', { count: result.length });
+
     res.json({
       imported: result.length,
       message: `Successfully imported ${result.length} contacts`,
     });
   } catch (error) {
     if (error.writeErrors) {
+      emitToOrg(req, 'contacts.imported', { count: error.insertedDocs?.length || 0 });
       return res.json({
         imported: error.insertedDocs?.length || 0,
         errors: error.writeErrors.length,
@@ -267,6 +280,8 @@ const bulkUpdateContacts = async (req, res, next) => {
       default:
         throw new AppError(`Unknown action: ${action}`, 400);
     }
+
+    emitToOrg(req, 'contacts.bulk_updated', { ids, action });
 
     res.json({
       updated: result.modifiedCount,

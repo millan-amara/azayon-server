@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const Org = require('../models/Org');
+const Document = require('../models/Document');
 const { protect } = require('../middleware/auth');
 const { attachPlan } = require('../middleware/plan');
 const { AppError } = require('../middleware/error');
@@ -121,7 +122,25 @@ router.post('/webhook', async (req, res) => {
     console.log(`Paystack webhook: ${eventType}`);
 
     if (eventType === 'charge.success') {
-      const { orgId, priceKey } = data.metadata || {};
+      const meta = data.metadata || {};
+
+      // Invoice payment: mark the document as paid
+      if (meta.type === 'document' && meta.documentId) {
+        const doc = await Document.findById(meta.documentId);
+        if (doc && doc.type === 'invoice' && doc.status !== 'paid') {
+          doc.status = 'paid';
+          doc.paidAt = new Date();
+          doc.paidAmount = (data.amount || 0) / 100;
+          doc.paymentMethod = (data.channel === 'mobile_money' ? 'mpesa' : data.channel) || 'card';
+          doc.paymentReference = data.reference;
+          await doc.save();
+          console.log(`Invoice ${doc.number} paid via Paystack (ref ${data.reference})`);
+        }
+        return res.sendStatus(200);
+      }
+
+      // Otherwise: subscription / org upgrade flow
+      const { orgId, priceKey } = meta;
       if (!orgId) return res.sendStatus(200);
 
       const org = await Org.findById(orgId);

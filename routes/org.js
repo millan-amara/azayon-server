@@ -63,4 +63,30 @@ router.put('/me', requireRole('admin'), async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// PUT /api/orgs/me/onboarding — flip onboarding state (any logged-in member can complete/skip)
+router.put('/me/onboarding', async (req, res, next) => {
+  try {
+    const { completed, skipped } = req.body;
+    const update = {};
+    if (completed === true) {
+      update['onboarding.completed'] = true;
+      update['onboarding.completedAt'] = new Date();
+    }
+    if (skipped === true) {
+      update['onboarding.skipped'] = true;
+    }
+    if (Object.keys(update).length === 0) {
+      throw new AppError('Nothing to update', 400);
+    }
+
+    const org = await Org.findByIdAndUpdate(
+      req.orgId,
+      { $set: update },
+      { new: true }
+    );
+    if (!org) throw new AppError('Organisation not found', 404);
+    res.json({ org });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

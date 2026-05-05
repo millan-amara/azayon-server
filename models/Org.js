@@ -33,6 +33,13 @@ const orgSchema = new mongoose.Schema({
     },
   },
 
+  // First-time setup tracking. The wizard renders until completed/skipped is true.
+  onboarding: {
+    completed:   { type: Boolean, default: false },
+    completedAt: { type: Date },
+    skipped:     { type: Boolean, default: false },
+  },
+
   // Subscription
   subscription: {
     plan: { type: String, enum: ['free', 'growth'], default: 'free' },

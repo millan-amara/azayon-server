@@ -5,6 +5,7 @@ const Deal = require('../models/Deal');
 const Pipeline = require('../models/Pipeline');
 const { apiKeyAuth } = require('../middleware/auth');
 const { triggerAutomation } = require('../automations/engine');
+const { emitToOrg } = require('../utils/socket');
 
 /**
  * ALL inbound webhook routes use API key auth (x-api-key header)
@@ -39,6 +40,8 @@ router.post('/contacts', async (req, res, next) => {
 
     await triggerAutomation('contact.created', { contact, orgId: req.orgId });
 
+    emitToOrg(req, 'contact.created', { contactId: contact._id });
+
     res.status(201).json({
       success: true,
       contact: { _id: contact._id, email: contact.email, firstName: contact.firstName },
@@ -55,6 +58,9 @@ router.put('/contacts/:id', async (req, res, next) => {
       { new: true }
     );
     if (!contact) return res.status(404).json({ success: false, error: 'Contact not found' });
+
+    emitToOrg(req, 'contact.updated', { contactId: contact._id });
+
     res.json({ success: true, contact });
   } catch (error) { next(error); }
 });
@@ -89,6 +95,8 @@ router.post('/deals', async (req, res, next) => {
       probability: stage.probability,
       stageHistory: [{ stageId: stage._id, stageName: stage.name, enteredAt: new Date() }],
     });
+
+    emitToOrg(req, 'deal.created', { dealId: deal._id, pipelineId: pipeline._id });
 
     res.status(201).json({ success: true, deal: { _id: deal._id, title: deal.title } });
   } catch (error) { next(error); }

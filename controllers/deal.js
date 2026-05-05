@@ -7,6 +7,7 @@ const { triggerAutomation } = require('../automations/engine');
 const { createNotification } = require('./notification');
 const { sendDealAssigned } = require('../utils/whatsapp');
 const { toCsv, setCsvHeaders } = require('../utils/csv');
+const { emitToOrg } = require('../utils/socket');
 
 // GET /api/deals
 const getDeals = async (req, res, next) => {
@@ -159,6 +160,8 @@ const createDeal = async (req, res, next) => {
 
     await triggerAutomation('deal.created', { deal, orgId: req.orgId });
 
+    emitToOrg(req, 'deal.created', { dealId: deal._id, pipelineId: deal.pipeline });
+
     res.status(201).json({ deal });
   } catch (error) {
     next(error);
@@ -224,6 +227,12 @@ const updateDeal = async (req, res, next) => {
       });
     }
 
+    emitToOrg(req, 'deal.updated', {
+      dealId: deal._id,
+      pipelineId: deal.pipeline?._id || deal.pipeline,
+      stageChanged,
+    });
+
     res.json({ deal });
   } catch (error) {
     next(error);
@@ -242,6 +251,8 @@ const markWon = async (req, res, next) => {
     if (!deal) throw new AppError('Deal not found', 404);
 
     await triggerAutomation('deal.won', { deal, orgId: req.orgId });
+
+    emitToOrg(req, 'deal.won', { dealId: deal._id, pipelineId: deal.pipeline });
 
     res.json({ deal });
   } catch (error) {
@@ -263,6 +274,8 @@ const markLost = async (req, res, next) => {
 
     await triggerAutomation('deal.lost', { deal, orgId: req.orgId });
 
+    emitToOrg(req, 'deal.lost', { dealId: deal._id, pipelineId: deal.pipeline });
+
     res.json({ deal });
   } catch (error) {
     next(error);
@@ -274,6 +287,9 @@ const deleteDeal = async (req, res, next) => {
   try {
     const deal = await Deal.findOneAndDelete({ _id: req.params.id, orgId: req.orgId });
     if (!deal) throw new AppError('Deal not found', 404);
+
+    emitToOrg(req, 'deal.deleted', { dealId: deal._id, pipelineId: deal.pipeline });
+
     res.json({ message: 'Deal deleted' });
   } catch (error) {
     next(error);

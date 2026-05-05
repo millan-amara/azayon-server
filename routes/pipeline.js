@@ -3,6 +3,7 @@ const router = express.Router();
 const Pipeline = require('../models/Pipeline');
 const { AppError } = require('../middleware/error');
 const { protect, requireRole } = require('../middleware/auth');
+const { emitToOrg } = require('../utils/socket');
 
 router.use(protect);
 
@@ -27,6 +28,7 @@ router.get('/:id', async (req, res, next) => {
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
     const pipeline = await Pipeline.create({ ...req.body, orgId: req.orgId, createdBy: req.user._id });
+    emitToOrg(req, 'pipeline.created', { pipelineId: pipeline._id });
     res.status(201).json({ pipeline });
   } catch (error) { next(error); }
 });
@@ -40,6 +42,7 @@ router.put('/:id', requireRole('admin'), async (req, res, next) => {
       { new: true, runValidators: true }
     );
     if (!pipeline) throw new AppError('Pipeline not found', 404);
+    emitToOrg(req, 'pipeline.updated', { pipelineId: pipeline._id });
     res.json({ pipeline });
   } catch (error) { next(error); }
 });
@@ -51,6 +54,7 @@ router.delete('/:id', requireRole('admin'), async (req, res, next) => {
     if (!pipeline) throw new AppError('Pipeline not found', 404);
     if (pipeline.isDefault) throw new AppError('Cannot delete default pipeline', 400);
     await pipeline.deleteOne();
+    emitToOrg(req, 'pipeline.deleted', { pipelineId: pipeline._id });
     res.json({ message: 'Pipeline deleted' });
   } catch (error) { next(error); }
 });

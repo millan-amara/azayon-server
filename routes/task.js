@@ -6,6 +6,7 @@ const { protect } = require('../middleware/auth');
 const { triggerAutomation } = require('../automations/engine');
 const { createNotification } = require('./notification');
 const { sendTaskAssigned } = require('../utils/whatsapp');
+const { emitToOrg } = require('../utils/socket');
 
 router.use(protect);
 
@@ -73,6 +74,15 @@ const computeSendAt = (dueDate, reminder) => {
   return new Date(due.getTime() - ms);
 };
 
+// Add `interval` of `unit` to a date (preserves time of day)
+const advanceDate = (date, interval, unit) => {
+  const d = new Date(date);
+  if (unit === 'day')   d.setDate(d.getDate() + interval);
+  if (unit === 'week')  d.setDate(d.getDate() + interval * 7);
+  if (unit === 'month') d.setMonth(d.getMonth() + interval);
+  return d;
+};
+
 // POST /api/tasks
 router.post('/', async (req, res, next) => {
   try {
@@ -122,6 +132,8 @@ router.post('/', async (req, res, next) => {
       }
     }
 
+    emitToOrg(req, 'task.created', { taskId: task._id });
+
     res.status(201).json({ task });
   } catch (error) { next(error); }
 });
@@ -129,6 +141,9 @@ router.post('/', async (req, res, next) => {
 // PUT /api/tasks/:id
 router.put('/:id', async (req, res, next) => {
   try {
+    const previous = await Task.findOne({ _id: req.params.id, orgId: req.orgId }).lean();
+    if (!previous) throw new AppError('Task not found', 404);
+
     const updates = { ...req.body };
     if (!updates.assignedTo) delete updates.assignedTo;
     if (!updates.contact) delete updates.contact;
@@ -152,7 +167,43 @@ router.put('/:id', async (req, res, next) => {
       { new: true }
     ).populate('assignedTo contact deal');
 
-    if (!task) throw new AppError('Task not found', 404);
+    // Spawn the next instance if a recurring task was just completed
+    const becameCompleted = previous.status !== 'completed' && task.status === 'completed';
+    const rec = previous.recurrence;
+    if (becameCompleted && rec?.interval && rec?.unit && previous.dueDate) {
+      const nextDue = advanceDate(previous.dueDate, rec.interval, rec.unit);
+      const stillOk = !rec.endDate || nextDue <= new Date(rec.endDate);
+      if (stillOk) {
+        const nextReminder = previous.reminder?.offset
+          ? {
+              offset: previous.reminder.offset,
+              unit: previous.reminder.unit,
+              sendAt: computeSendAt(nextDue, previous.reminder),
+              sent: false,
+            }
+          : undefined;
+
+        await Task.create({
+          orgId: previous.orgId,
+          title: previous.title,
+          description: previous.description,
+          contact: previous.contact,
+          deal: previous.deal,
+          assignedTo: previous.assignedTo,
+          createdBy: req.user._id,
+          dueDate: nextDue,
+          dueTime: previous.dueTime,
+          priority: previous.priority,
+          type: previous.type,
+          status: 'pending',
+          reminder: nextReminder,
+          recurrence: previous.recurrence,
+        });
+      }
+    }
+
+    emitToOrg(req, 'task.updated', { taskId: task._id });
+
     res.json({ task });
   } catch (error) { next(error); }
 });
@@ -162,6 +213,9 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const task = await Task.findOneAndDelete({ _id: req.params.id, orgId: req.orgId });
     if (!task) throw new AppError('Task not found', 404);
+
+    emitToOrg(req, 'task.deleted', { taskId: task._id });
+
     res.json({ message: 'Task deleted' });
   } catch (error) { next(error); }
 });

@@ -10,7 +10,8 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 
 const connectDB = require('./config/db');
-// Job scheduler is initialized per-org when needed, not at startup
+// Scheduled work (reminders, inactive deals, overdue tasks) is driven by
+// cron-job.org calling /api/internal/* every 15 min and hourly.
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -29,6 +30,12 @@ const internalRoutes = require('./routes/internal');
 const aiRoutes = require('./routes/ai');
 const attachmentRoutes = require('./routes/attachments');
 const billingRoutes = require('./routes/billing');
+const documentRoutes = require('./routes/document');
+const publicRoutes = require('./routes/public');
+const emailTemplateRoutes = require('./routes/emailTemplate');
+const customFieldRoutes = require('./routes/customField');
+const reportsRoutes = require('./routes/reports');
+const customerRoutes = require('./routes/customer');
 const { attachPlan } = require('./middleware/plan');
 
 const { errorHandler } = require('./middleware/error');
@@ -110,6 +117,12 @@ app.use('/api/internal', internalRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/attachments', attachmentRoutes);
 app.use('/api/billing', billingRoutes);
+app.use('/api/documents', restrictViewer, documentRoutes);
+app.use('/api/email-templates', restrictViewer, emailTemplateRoutes);
+app.use('/api/custom-fields', restrictViewer, customFieldRoutes);
+app.use('/api/reports', reportsRoutes);
+app.use('/api/customers', customerRoutes);
+app.use('/api/public', publicRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

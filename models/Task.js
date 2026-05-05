@@ -45,6 +45,13 @@ const taskSchema = new mongoose.Schema({
     sendAt: { type: Date }, // pre-computed: dueDate minus offset
     sent: { type: Boolean, default: false },
   },
+
+  // Repeats every N units after the previous one is completed
+  recurrence: {
+    interval: { type: Number, min: 1 },          // e.g. 30
+    unit:     { type: String, enum: ['day', 'week', 'month'] },
+    endDate:  { type: Date },                    // optional cutoff
+  },
 }, { timestamps: true });
 
 taskSchema.index({ orgId: 1, assignedTo: 1, status: 1 });
