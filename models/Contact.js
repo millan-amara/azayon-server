@@ -44,6 +44,11 @@ const contactSchema = new mongoose.Schema({
   // Custom fields (flexible key-value)
   customFields: { type: Map, of: String },
 
+  // Relationship dates — only month/day matter for matching, but we store full
+  // dates so the UI can show ages/anniversary numbers if we want them later.
+  birthday:    { type: Date },
+  anniversary: { type: Date },
+
   // Notes (quick note field separate from timeline)
   notes: { type: String },
 

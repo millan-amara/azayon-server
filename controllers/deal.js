@@ -296,6 +296,108 @@ const deleteDeal = async (req, res, next) => {
   }
 };
 
+// POST /api/deals/import — bulk-create deals from a CSV, auto-linking or
+// auto-creating contacts, with stage mapping by name (falling back to default).
+const importDeals = async (req, res, next) => {
+  try {
+    const { deals: rows, pipelineId, defaultStageId, autoCreateContacts = true } = req.body;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new AppError('No deals provided', 400);
+    }
+    if (rows.length > 500) {
+      throw new AppError('Maximum 500 deals per import', 400);
+    }
+
+    const pipeline = await Pipeline.findOne({ _id: pipelineId, orgId: req.orgId });
+    if (!pipeline) throw new AppError('Pipeline not found', 404);
+
+    const defaultStage = defaultStageId ? pipeline.stages.id(defaultStageId) : null;
+    if (!defaultStage) throw new AppError('Default stage is required', 400);
+
+    // Build a lowercase stage-name index so per-row "Stage" columns map cleanly
+    const stageByName = new Map(pipeline.stages.map((s) => [s.name.toLowerCase().trim(), s]));
+
+    const results = { imported: 0, contactsCreated: 0, skipped: 0, errors: [] };
+
+    for (const row of rows) {
+      try {
+        const title = String(row.title || '').trim();
+        if (!title) { results.skipped++; continue; }
+
+        // Resolve contact: by email, then by name, else auto-create if we have *something*
+        const email = row.contactEmail ? String(row.contactEmail).toLowerCase().trim() : null;
+        const phone = row.contactPhone ? String(row.contactPhone).trim() : null;
+
+        let contact = null;
+        if (email)  contact = await Contact.findOne({ orgId: req.orgId, email });
+        if (!contact && phone) contact = await Contact.findOne({ orgId: req.orgId, phone });
+
+        if (!contact) {
+          const nameField = String(row.contactName || '').trim();
+          const [first, ...rest] = nameField ? nameField.split(/\s+/) : [];
+          const firstName = first || (email ? email.split('@')[0] : '');
+          const lastName  = rest.join(' ');
+
+          if (autoCreateContacts && (firstName || email)) {
+            contact = await Contact.create({
+              orgId:     req.orgId,
+              firstName: firstName || 'Unknown',
+              lastName,
+              email:     email || undefined,
+              phone:     phone || undefined,
+              source:    'import',
+              createdBy: req.user._id,
+            });
+            results.contactsCreated++;
+          } else {
+            results.skipped++;
+            continue;
+          }
+        }
+
+        // Resolve stage — per-row "Stage" column wins, otherwise default
+        const stageName = String(row.stageName || '').toLowerCase().trim();
+        const stage = (stageName && stageByName.get(stageName)) || defaultStage;
+
+        const value = Number(row.value) || 0;
+        const expectedCloseDate = row.expectedCloseDate ? new Date(row.expectedCloseDate) : undefined;
+
+        await Deal.create({
+          orgId:    req.orgId,
+          title,
+          value,
+          currency: String(row.currency || pipeline.currency || 'KES').toUpperCase(),
+          contact:  contact._id,
+          pipeline: pipeline._id,
+          stageId:  stage._id,
+          stageName: stage.name,
+          probability: stage.probability,
+          expectedCloseDate: Number.isFinite(expectedCloseDate?.getTime()) ? expectedCloseDate : undefined,
+          notes: row.notes ? String(row.notes) : undefined,
+          createdBy: req.user._id,
+          stageHistory: [{ stageId: stage._id, stageName: stage.name, enteredAt: new Date() }],
+        });
+        results.imported++;
+      } catch (err) {
+        results.errors.push({ row: row.title || '(unnamed)', error: err.message });
+      }
+    }
+
+    emitToOrg(req, 'deals.imported', { count: results.imported });
+
+    res.json({
+      ...results,
+      errors: results.errors.length, // collapse to a count to keep the response small
+      message: `Imported ${results.imported} deal${results.imported === 1 ? '' : 's'}` +
+        (results.contactsCreated ? `, created ${results.contactsCreated} new contact${results.contactsCreated === 1 ? '' : 's'}` : '') +
+        (results.skipped ? `, skipped ${results.skipped}` : ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // GET /api/deals/export — CSV download, respects same filters as list
 const exportDeals = async (req, res, next) => {
   try {
@@ -344,4 +446,4 @@ const exportDeals = async (req, res, next) => {
   }
 };
 
-module.exports = { getDeals, getKanban, getDeal, createDeal, updateDeal, markWon, markLost, deleteDeal, exportDeals };
+module.exports = { getDeals, getKanban, getDeal, createDeal, updateDeal, markWon, markLost, deleteDeal, exportDeals, importDeals };

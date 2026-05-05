@@ -102,4 +102,95 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// GET /api/dashboard/activity?limit=20 — unified recent-activity feed for the
+// dashboard "What's happening" panel. Pulls from existing data (no events table).
+router.get('/activity', async (req, res, next) => {
+  try {
+    const orgId = req.orgId;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+
+    const [wonDeals, lostDeals, newDeals, newContacts] = await Promise.all([
+      Deal.find({ orgId, status: 'won', closedAt: { $ne: null } })
+        .sort({ closedAt: -1 }).limit(limit)
+        .populate('assignedTo', 'name')
+        .populate('contact', 'firstName lastName company')
+        .select('title value currency closedAt assignedTo contact')
+        .lean(),
+
+      Deal.find({ orgId, status: 'lost', closedAt: { $ne: null } })
+        .sort({ closedAt: -1 }).limit(limit)
+        .populate('assignedTo', 'name')
+        .populate('contact', 'firstName lastName company')
+        .select('title value currency closedAt assignedTo contact')
+        .lean(),
+
+      Deal.find({ orgId })
+        .sort({ createdAt: -1 }).limit(limit)
+        .populate('createdBy', 'name')
+        .populate('contact', 'firstName lastName company')
+        .select('title value currency createdAt createdBy contact')
+        .lean(),
+
+      Contact.find({ orgId, isArchived: false })
+        .sort({ createdAt: -1 }).limit(limit)
+        .populate('createdBy', 'name')
+        .select('firstName lastName company createdAt createdBy')
+        .lean(),
+    ]);
+
+    const contactName = (c) => c
+      ? [c.firstName, c.lastName].filter(Boolean).join(' ') || c.company || 'a contact'
+      : null;
+
+    const events = [
+      ...wonDeals.map((d) => ({
+        type: 'deal_won',
+        actor: d.assignedTo?.name,
+        target: d.title,
+        contactName: contactName(d.contact),
+        amount: d.value,
+        currency: d.currency,
+        when: d.closedAt,
+        resourceType: 'deal',
+        resourceId: d._id,
+      })),
+      ...lostDeals.map((d) => ({
+        type: 'deal_lost',
+        actor: d.assignedTo?.name,
+        target: d.title,
+        contactName: contactName(d.contact),
+        amount: d.value,
+        currency: d.currency,
+        when: d.closedAt,
+        resourceType: 'deal',
+        resourceId: d._id,
+      })),
+      ...newDeals.map((d) => ({
+        type: 'deal_created',
+        actor: d.createdBy?.name,
+        target: d.title,
+        contactName: contactName(d.contact),
+        amount: d.value,
+        currency: d.currency,
+        when: d.createdAt,
+        resourceType: 'deal',
+        resourceId: d._id,
+      })),
+      ...newContacts.map((c) => ({
+        type: 'contact_created',
+        actor: c.createdBy?.name,
+        target: contactName(c),
+        when: c.createdAt,
+        resourceType: 'contact',
+        resourceId: c._id,
+      })),
+    ];
+
+    events.sort((a, b) => new Date(b.when) - new Date(a.when));
+    res.json({ activity: events.slice(0, limit) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

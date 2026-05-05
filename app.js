@@ -36,6 +36,7 @@ const emailTemplateRoutes = require('./routes/emailTemplate');
 const customFieldRoutes = require('./routes/customField');
 const reportsRoutes = require('./routes/reports');
 const customerRoutes = require('./routes/customer');
+const savedViewRoutes = require('./routes/savedView');
 const { attachPlan } = require('./middleware/plan');
 
 const { errorHandler } = require('./middleware/error');
@@ -122,6 +123,7 @@ app.use('/api/email-templates', restrictViewer, emailTemplateRoutes);
 app.use('/api/custom-fields', restrictViewer, customFieldRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/customers', customerRoutes);
+app.use('/api/saved-views', savedViewRoutes);
 app.use('/api/public', publicRoutes);
 
 // Health check
