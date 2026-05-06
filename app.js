@@ -106,11 +106,17 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Auth rate limit (stricter)
+// Auth rate limit (stricter) — guards credential-using endpoints (login,
+// register, verify, etc.) against brute force / credential stuffing.
+// Excludes /refresh: callers already hold a valid HTTP-only refresh cookie,
+// so it's not a credential-stuffing vector, and rate-limiting it caused
+// silent forced-logouts during normal long sessions (15-min access tokens
+// → frequent refreshes → bucket exhausted → refresh 429 → client logs out).
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many login attempts, please try again later.' },
+  skip: (req) => req.path === '/refresh',
 });
 
 // Even stricter limit on password-reset / verification endpoints — these
