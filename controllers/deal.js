@@ -217,6 +217,22 @@ const updateDeal = async (req, res, next) => {
       rest.stageId = stageId;
       rest.stageName = newStage.name;
       rest.probability = newStage.probability;
+
+      // Sync status + closedAt with the destination stage. Without this, a
+      // kanban drag into "Won" leaves status='open' / closedAt=null, so the
+      // deal vanishes from won-this-month stats and weekly digests even
+      // though it visibly sits in the Won column. Same for "Lost".
+      // Reverting a closed deal back to an open stage clears both fields.
+      if (newStage.isWon && existing.status !== 'won') {
+        rest.status = 'won';
+        rest.closedAt = new Date();
+      } else if (newStage.isLost && existing.status !== 'lost') {
+        rest.status = 'lost';
+        rest.closedAt = new Date();
+      } else if (!newStage.isWon && !newStage.isLost && existing.status !== 'open') {
+        rest.status = 'open';
+        rest.closedAt = null;
+      }
     }
 
     const deal = await Deal.findByIdAndUpdate(
@@ -240,6 +256,16 @@ const updateDeal = async (req, res, next) => {
         toStageId: stageId,
         orgId: req.orgId,
       });
+
+      // If the move also changed status (open → won/lost), fire the
+      // status-transition trigger too. Otherwise users with a "deal won →
+      // tag as customer" automation get nothing when reps drag to Won
+      // (they only get it via the explicit Mark-Won button).
+      if (newStage.isWon && existing.status !== 'won') {
+        await triggerAutomation('deal.won', { deal, orgId: req.orgId });
+      } else if (newStage.isLost && existing.status !== 'lost') {
+        await triggerAutomation('deal.lost', { deal, orgId: req.orgId });
+      }
 
       // Update contact timeline
       await Contact.findByIdAndUpdate(deal.contact._id, {
