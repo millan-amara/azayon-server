@@ -21,21 +21,43 @@ const { emitToOrg } = require('../utils/socket');
 
 router.use(apiKeyAuth);
 
+// Mirrors CONTACT_EDITABLE_FIELDS in controllers/contact.js — kept in sync to
+// stop a webhook caller from setting orgId, _id, isArchived, attachments,
+// timeline, etc. via a `$set: req.body` blanket update.
+const WEBHOOK_CONTACT_FIELDS = [
+  'firstName', 'lastName', 'email', 'phone', 'company', 'jobTitle',
+  'status', 'tags', 'notes', 'source', 'city', 'country',
+  'assignedTo', 'birthday', 'anniversary', 'whatsappUrl', 'customFields',
+  'address', 'website', 'leadScore',
+];
+
+const pickWebhookFields = (body, allowed) => {
+  const out = {};
+  if (!body || typeof body !== 'object') return out;
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) out[key] = body[key];
+  }
+  return out;
+};
+
 // POST /api/webhooks/contacts - create or upsert a contact from n8n
 router.post('/contacts', async (req, res, next) => {
   try {
-    const { email, ...rest } = req.body;
+    const fields = pickWebhookFields(req.body, WEBHOOK_CONTACT_FIELDS);
+    // Force email to a string so an attacker can't sneak {$ne: null} into the upsert filter.
+    const email = typeof fields.email === 'string' ? fields.email.toLowerCase().trim() : '';
+    delete fields.email;
 
     let contact;
     if (email) {
       // Upsert by email
       contact = await Contact.findOneAndUpdate(
         { email, orgId: req.orgId },
-        { $set: { ...rest, email, orgId: req.orgId, source: 'n8n' } },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { $set: { ...fields, email, orgId: req.orgId, source: 'n8n' } },
+        { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
       );
     } else {
-      contact = await Contact.create({ ...rest, orgId: req.orgId, source: 'n8n' });
+      contact = await Contact.create({ ...fields, orgId: req.orgId, source: 'n8n' });
     }
 
     await triggerAutomation('contact.created', { contact, orgId: req.orgId });
@@ -52,10 +74,12 @@ router.post('/contacts', async (req, res, next) => {
 // POST /api/webhooks/contacts/:id - update a specific contact from n8n
 router.put('/contacts/:id', async (req, res, next) => {
   try {
+    const updates = pickWebhookFields(req.body, WEBHOOK_CONTACT_FIELDS);
+
     const contact = await Contact.findOneAndUpdate(
       { _id: req.params.id, orgId: req.orgId },
-      { $set: req.body },
-      { new: true }
+      { $set: updates },
+      { new: true, runValidators: true }
     );
     if (!contact) return res.status(404).json({ success: false, error: 'Contact not found' });
 

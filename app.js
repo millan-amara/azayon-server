@@ -38,10 +38,13 @@ const reportsRoutes = require('./routes/reports');
 const customerRoutes = require('./routes/customer');
 const savedViewRoutes = require('./routes/savedView');
 const paymentsRoutes = require('./routes/payments');
+const superadminRoutes = require('./routes/superadmin');
 const { attachPlan } = require('./middleware/plan');
 
 const { errorHandler } = require('./middleware/error');
 const { restrictViewer } = require('./middleware/auth');
+const { sanitizeRequest } = require('./middleware/sanitize');
+const { attachSocketAuth } = require('./middleware/socketAuth');
 
 const app = express();
 const server = http.createServer(app);
@@ -87,6 +90,14 @@ app.use((req, res, next) => {
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+// Strip Mongo operator keys ($-prefixed, dotted) from incoming payloads to
+// block NoSQL operator injection (e.g. {email:{$gt:""}} bypassing /login).
+// Runs after body parsing, before any route handler.
+app.use((req, res, next) => {
+  if (req.path === '/api/billing/webhook') return next();
+  sanitizeRequest(req, res, next);
+});
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -102,7 +113,19 @@ const authLimiter = rateLimit({
   message: { error: 'Too many login attempts, please try again later.' },
 });
 
+// Even stricter limit on password-reset / verification endpoints — these
+// generate emails and DB writes per request and are the natural target of
+// account-enumeration / mailbomb attacks.
+const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1h
+  max: 5,
+  message: { error: 'Too many password reset attempts, please try again later.' },
+});
+
 // Routes
+app.use('/api/auth/forgot-password', passwordResetLimiter);
+app.use('/api/auth/reset-password', passwordResetLimiter);
+app.use('/api/auth/resend-verification', passwordResetLimiter);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/contacts', restrictViewer, contactRoutes);
 app.use('/api/deals', restrictViewer, dealRoutes);
@@ -126,6 +149,7 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/saved-views', savedViewRoutes);
 app.use('/api/payments', paymentsRoutes);
+app.use('/api/superadmin', superadminRoutes);
 app.use('/api/public', publicRoutes);
 
 // Health check
@@ -141,10 +165,19 @@ app.use('*path', (req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// Socket.io connection
+// Socket.io: authenticate on handshake (rejects unauthenticated connections),
+// then auto-join the user's own org room. We ignore client-supplied orgIds
+// so a logged-in user can't subscribe to a *different* org's events.
+attachSocketAuth(io);
 io.on('connection', (socket) => {
+  if (socket.user?.orgId) {
+    socket.join(`org_${socket.user.orgId}`);
+  }
+  // Kept for backwards compatibility but only honoured for the user's own org
   socket.on('join_org', (orgId) => {
-    socket.join(`org_${orgId}`);
+    if (orgId && socket.user?.orgId && String(orgId) === socket.user.orgId) {
+      socket.join(`org_${socket.user.orgId}`);
+    }
   });
 
   socket.on('disconnect', () => {});

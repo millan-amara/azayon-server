@@ -82,4 +82,13 @@ const restrictViewer = (req, res, next) => {
   next();
 };
 
-module.exports = { protect, apiKeyAuth, requireRole, protectOrApiKey, restrictViewer };
+// Platform-level superadmin gate — for the founders' cross-tenant dashboard.
+// Always pair with `protect` first.
+const requireSuperadmin = (req, res, next) => {
+  if (!req.user?.isSuperadmin) {
+    return res.status(403).json({ error: 'Superadmin access required' });
+  }
+  next();
+};
+
+module.exports = { protect, apiKeyAuth, requireRole, protectOrApiKey, restrictViewer, requireSuperadmin };

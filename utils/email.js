@@ -5,6 +5,21 @@ const getResend = () => {
   return new Resend(process.env.RESEND_API_KEY);
 };
 
+// Escape user-supplied strings before they land inside an HTML email body.
+// Email clients vary, but a recipient's display name like
+// `<a href="phish">click</a>` shouldn't render as a hyperlink in our templates.
+// Also defends against subtle injection like an attacker controlling
+// `inviterName` to break out of `<strong>...</strong>` and inject a fake CTA.
+function esc(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const baseTemplate = (content) => `
 <!DOCTYPE html>
 <html>
@@ -65,67 +80,70 @@ const sendEmail = async ({ to, subject, html }) => {
 };
 
 const sendVerificationEmail = async ({ to, name, token }) => {
-  const url = `${process.env.CLIENT_URL}/verify-email?token=${token}`;
+  // The token is hex from crypto.randomBytes — safe in URL/HTML — but escape anyway.
+  const url = `${process.env.CLIENT_URL}/verify-email?token=${encodeURIComponent(token)}`;
   await sendEmail({
     to,
     subject: 'Confirm your email address',
     html: baseTemplate(`
-      <p>Hi ${name},</p>
+      <p>Hi ${esc(name)},</p>
       <p>Thanks for signing up! Please confirm your email address to activate your account.</p>
-      <a href="${url}" class="btn">Confirm email</a>
+      <a href="${esc(url)}" class="btn">Confirm email</a>
       <hr class="divider"/>
       <p class="muted">This link expires in 24 hours. If the button doesn't work, copy and paste this link:</p>
-      <p class="url-fallback">${url}</p>
+      <p class="url-fallback">${esc(url)}</p>
     `),
   });
 };
 
 const sendPasswordResetEmail = async ({ to, name, token }) => {
-  const url = `${process.env.CLIENT_URL}/reset-password?token=${token}`;
+  const url = `${process.env.CLIENT_URL}/reset-password?token=${encodeURIComponent(token)}`;
   await sendEmail({
     to,
     subject: 'Reset your password',
     html: baseTemplate(`
-      <p>Hi ${name},</p>
+      <p>Hi ${esc(name)},</p>
       <p>We received a request to reset the password for your account. Click the button below to set a new password.</p>
-      <a href="${url}" class="btn">Reset password</a>
+      <a href="${esc(url)}" class="btn">Reset password</a>
       <hr class="divider"/>
       <p class="muted">This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email — your password will not be changed.</p>
       <p class="muted">If the button doesn't work, copy and paste this link:</p>
-      <p class="url-fallback">${url}</p>
+      <p class="url-fallback">${esc(url)}</p>
     `),
   });
 };
 
 const sendInviteEmail = async ({ to, name, inviterName, orgName, inviteLink }) => {
+  const appName = process.env.APP_NAME || 'CRM';
   await sendEmail({
     to,
-    subject: `${inviterName} invited you to join ${orgName} on ${process.env.APP_NAME || 'CRM'}`,
+    subject: `${inviterName} invited you to join ${orgName} on ${appName}`,
     html: baseTemplate(`
-      <p>Hi ${name},</p>
-      <p><strong>${inviterName}</strong> has invited you to join <strong>${orgName}</strong> on ${process.env.APP_NAME || 'CRM'}.</p>
+      <p>Hi ${esc(name)},</p>
+      <p><strong>${esc(inviterName)}</strong> has invited you to join <strong>${esc(orgName)}</strong> on ${esc(appName)}.</p>
       <p>Click the button below to set up your account. This invite link expires in 7 days.</p>
-      <a href="${inviteLink}" class="btn">Accept invitation</a>
+      <a href="${esc(inviteLink)}" class="btn">Accept invitation</a>
       <hr class="divider"/>
       <p class="muted">If the button doesn't work, copy and paste this link:</p>
-      <p class="url-fallback">${inviteLink}</p>
+      <p class="url-fallback">${esc(inviteLink)}</p>
       <p class="muted">If you weren't expecting this invitation, you can safely ignore this email.</p>
     `),
   });
 };
 
 const sendWelcomeEmail = async ({ to, name, orgName }) => {
+  const appName = process.env.APP_NAME || 'CRM';
   await sendEmail({
     to,
-    subject: `Welcome to ${process.env.APP_NAME || 'CRM'}, ${name}!`,
+    subject: `Welcome to ${appName}, ${name}!`,
     html: baseTemplate(`
-      <p>Hi ${name},</p>
-      <p>Your account for <strong>${orgName}</strong> is all set up and ready to go.</p>
+      <p>Hi ${esc(name)},</p>
+      <p>Your account for <strong>${esc(orgName)}</strong> is all set up and ready to go.</p>
       <p>Here's what you can do right away:</p>
       <p>→ Add your first contacts<br/>
          → Set up your sales pipeline<br/>
          → Connect n8n for automations</p>
-      <a href="${process.env.CLIENT_URL}" class="btn">Go to your CRM</a>
+      <a href="${esc(process.env.CLIENT_URL || '')}" class="btn">Go to your CRM</a>
     `),
   });
 };

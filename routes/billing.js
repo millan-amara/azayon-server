@@ -111,7 +111,13 @@ router.post('/webhook', async (req, res) => {
       .update(rawBody)
       .digest('hex');
 
-    if (hash !== signature) {
+    // Constant-time compare. `!==` on a string would short-circuit at the
+    // first differing character, leaking the prefix length and (over many
+    // requests) the true signature byte-by-byte.
+    const sigStr = typeof signature === 'string' ? signature : '';
+    const a = Buffer.from(hash, 'utf8');
+    const b = Buffer.from(sigStr, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
       console.error('Paystack webhook signature mismatch');
       return res.status(401).json({ error: 'Invalid signature' });
     }

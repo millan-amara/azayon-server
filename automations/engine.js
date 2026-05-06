@@ -7,6 +7,70 @@ const Pipeline = require('../models/Pipeline');
 const { sendEmail } = require('../utils/email');
 const { sendDealInactive, sendDealAssigned, sendTaskReminder, sendTaskAssigned } = require('../utils/whatsapp');
 const axios = require('axios');
+const dns = require('dns').promises;
+const net = require('net');
+
+// SSRF guard for the user-configurable `send_webhook` action. Without this,
+// any sales_rep could point an automation at http://169.254.169.254/... (cloud
+// metadata), http://localhost:5000/api/internal/... (cron-only endpoints), or
+// any internal service on the deployment's private network. The guard:
+//   1. Allows only http/https URLs.
+//   2. Resolves the hostname (via DNS) BEFORE the request, and rejects if any
+//      A/AAAA answer falls in a private/loopback/link-local range.
+//   3. Re-checks via axios's `lookup` so a TOCTOU swap can't slip past.
+function isPrivateIPv4(ip) {
+  const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const [, a, b] = m.map(Number);
+  return (
+    a === 10 ||                       // 10.0.0.0/8
+    a === 127 ||                      // 127.0.0.0/8 loopback
+    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
+    (a === 192 && b === 168) ||       // 192.168.0.0/16
+    (a === 169 && b === 254) ||       // 169.254.0.0/16 link-local (cloud metadata)
+    a === 0 ||                        // 0.0.0.0/8
+    a === 100 && b >= 64 && b <= 127  // 100.64.0.0/10 carrier-grade NAT
+  );
+}
+function isPrivateIPv6(ip) {
+  const lower = ip.toLowerCase();
+  if (lower === '::1' || lower === '::') return true;       // loopback / unspecified
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique local fc00::/7
+  if (lower.startsWith('fe80')) return true;                // link-local
+  if (lower.startsWith('::ffff:')) {                        // IPv4-mapped
+    return isPrivateIPv4(lower.slice(7));
+  }
+  return false;
+}
+function isPrivateAddress(addr) {
+  if (!addr) return true;
+  if (net.isIPv4(addr)) return isPrivateIPv4(addr);
+  if (net.isIPv6(addr)) return isPrivateIPv6(addr);
+  return true; // unknown family — refuse
+}
+
+async function assertPublicUrl(rawUrl) {
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { throw new Error('Invalid webhook URL'); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Webhook URL must be http(s)');
+  }
+  // Reject literal-IP hosts pointing at private space straight away
+  const host = parsed.hostname;
+  if (net.isIP(host) && isPrivateAddress(host)) {
+    throw new Error('Webhook URL resolves to a private/internal address');
+  }
+  // Resolve the hostname; refuse if any answer is private
+  let answers = [];
+  try { answers = await dns.lookup(host, { all: true }); } catch {
+    throw new Error(`Could not resolve webhook host: ${host}`);
+  }
+  for (const a of answers) {
+    if (isPrivateAddress(a.address)) {
+      throw new Error('Webhook URL resolves to a private/internal address');
+    }
+  }
+}
 
 // Replace template variables like {{contact.firstName}} or
 // {{deal.contact.firstName}} (deep paths). If a segment of the path is
@@ -71,6 +135,13 @@ const executeAction = async (action, context, orgId) => {
     case 'send_webhook': {
       if (!config.url) return { success: false, error: 'No webhook URL' };
 
+      // SSRF guard — refuse private/loopback/link-local/cloud-metadata targets.
+      try {
+        await assertPublicUrl(config.url);
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+
       const payload = config.payload === 'full_context'
         ? {
             trigger: context.triggerType,
@@ -91,6 +162,12 @@ const executeAction = async (action, context, orgId) => {
         },
         data: payload,
         timeout: 10000,
+        // Cap response body size — without this, a hostile webhook target
+        // could stream gigabytes back at us and OOM the worker.
+        maxContentLength: 1 * 1024 * 1024,
+        maxBodyLength: 1 * 1024 * 1024,
+        // Don't follow redirects to a different (potentially internal) host.
+        maxRedirects: 0,
       });
       return { success: true, action: 'send_webhook', status: response.status };
     }

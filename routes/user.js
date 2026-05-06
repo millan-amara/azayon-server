@@ -11,7 +11,9 @@ const crypto = require('crypto');
 // POST /api/users/accept-invite — public, no auth required
 router.post('/accept-invite', async (req, res, next) => {
   try {
-    const { token, password } = req.body;
+    const token = typeof req.body.token === 'string' ? req.body.token : '';
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
+    if (!token) throw new AppError('Invite token required', 400);
     if (!password || password.length < 6) throw new AppError('Password must be at least 6 characters', 400);
 
     const invite = await Invite.findOne({ token, status: 'pending' });
@@ -68,7 +70,14 @@ router.get('/invites/pending', requireRole('admin'), async (req, res, next) => {
 // POST /api/users/invite
 router.post('/invite', requireRole('admin'), async (req, res, next) => {
   try {
-    const { name, email, role = 'sales_rep' } = req.body;
+    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+    const email = typeof req.body.email === 'string' ? req.body.email.toLowerCase().trim() : '';
+    const requestedRole = typeof req.body.role === 'string' ? req.body.role : 'sales_rep';
+    // Whitelist roles — never trust an arbitrary string into Mongo, since
+    // a role like '__proto__' or an unexpected value could have downstream effects.
+    const role = ['admin', 'sales_rep', 'viewer'].includes(requestedRole) ? requestedRole : 'sales_rep';
+
+    if (!name || !email) throw new AppError('Name and email are required', 400);
 
     const existingUser = await User.findOne({ email, orgId: req.orgId });
     if (existingUser) throw new AppError('This email is already a team member', 409);
@@ -119,14 +128,25 @@ router.delete('/invites/:id', requireRole('admin'), async (req, res, next) => {
 // PUT /api/users/me/password
 router.put('/me/password', async (req, res, next) => {
   try {
-    const { currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.user._id).select('+password');
-    if (!(await user.comparePassword(currentPassword))) {
+    const currentPassword = typeof req.body.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
+
+    if (!newPassword || newPassword.length < 6) {
+      throw new AppError('New password must be at least 6 characters', 400);
+    }
+    if (currentPassword === newPassword) {
+      throw new AppError('New password must be different from your current password', 400);
+    }
+
+    const user = await User.findById(req.user._id).select('+password +refreshTokens');
+    if (!user || !(await user.comparePassword(currentPassword))) {
       throw new AppError('Current password is incorrect', 400);
     }
     user.password = newPassword;
+    // Force every other session to re-authenticate after a password change.
+    user.refreshTokens = [];
     await user.save();
-    res.json({ message: 'Password updated' });
+    res.json({ message: 'Password updated. You have been signed out of other sessions.' });
   } catch (error) { next(error); }
 });
 
@@ -144,10 +164,18 @@ router.put('/:id', async (req, res, next) => {
     const updates = {};
     allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
 
+    // Validate role explicitly — schema enum isn't enforced on findOneAndUpdate
+    // unless we ask, and we'd rather fail fast with a clear error than rely
+    // on a runValidators stack trace.
+    if (updates.role !== undefined && !['admin', 'sales_rep', 'viewer'].includes(updates.role)) {
+      throw new AppError('Invalid role', 400);
+    }
+    if (updates.isActive !== undefined) updates.isActive = Boolean(updates.isActive);
+
     const user = await User.findOneAndUpdate(
       { _id: req.params.id, orgId: req.orgId },
       { $set: updates },
-      { new: true }
+      { new: true, runValidators: true }
     );
     if (!user) throw new AppError('User not found', 404);
     res.json({ user });

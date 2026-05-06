@@ -66,9 +66,14 @@ router.post('/', requireRole('admin', 'sales_rep'), async (req, res, next) => {
 // PUT /api/automations/:id
 router.put('/:id', requireRole('admin', 'sales_rep'), async (req, res, next) => {
   try {
+    // Strip server-controlled fields so a malicious payload can't relocate
+    // an automation to another org or rewrite its createdBy / runCount.
+    const { orgId, createdBy, _id, runCount, recentRuns, lastRunAt, lastRunStatus, ...safe } = req.body || {};
+    void orgId; void createdBy; void _id; void runCount; void recentRuns; void lastRunAt; void lastRunStatus;
+
     const automation = await Automation.findOneAndUpdate(
       { _id: req.params.id, orgId: req.orgId },
-      { $set: req.body },
+      { $set: safe },
       { new: true, runValidators: true }
     );
     if (!automation) throw new AppError('Automation not found', 404);

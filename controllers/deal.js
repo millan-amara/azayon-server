@@ -193,13 +193,31 @@ const createDeal = async (req, res, next) => {
   }
 };
 
+// Fields that are server-managed and must never be settable via PUT body —
+// orgId would let a deal jump tenants, stageHistory is the audit trail, and
+// status/closedAt/inactiveNotifiedAt are derived from stage transitions.
+const DEAL_SYSTEM_FIELDS = [
+  'orgId', 'createdBy', '_id', 'pipeline', 'stageHistory',
+  'status', 'closedAt', 'inactiveNotifiedAt', 'createdAt', 'updatedAt',
+];
+
+const stripDealSystemFields = (body) => {
+  const out = {};
+  if (!body || typeof body !== 'object') return out;
+  for (const k of Object.keys(body)) {
+    if (!DEAL_SYSTEM_FIELDS.includes(k)) out[k] = body[k];
+  }
+  return out;
+};
+
 // PUT /api/deals/:id
 const updateDeal = async (req, res, next) => {
   try {
     const existing = await Deal.findOne({ _id: req.params.id, orgId: req.orgId });
     if (!existing) throw new AppError('Deal not found', 404);
 
-    const { stageId, ...rest } = req.body;
+    const sanitized = stripDealSystemFields(req.body);
+    const { stageId, ...rest } = sanitized;
     let stageChanged = false;
     let newStage = null;
 

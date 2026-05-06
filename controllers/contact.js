@@ -86,10 +86,10 @@ const getContact = async (req, res, next) => {
 // POST /api/contacts
 const createContact = async (req, res, next) => {
   try {
-    const data = { ...req.body };
+    const data = pickFields(req.body, CONTACT_EDITABLE_FIELDS);
 
     //Strip empty strings from ObjectId fields to avoid CastErrors
-    if(!data.assignedTo) delete data.assignedTo;
+    if (!data.assignedTo) delete data.assignedTo;
 
     const contact = await Contact.create({
       ...data,
@@ -110,13 +110,35 @@ const createContact = async (req, res, next) => {
   }
 };
 
+// Whitelist of fields the contact PUT/POST may set. Anything else (orgId,
+// createdBy, isArchived, _id, timeline, attachments) is server-controlled —
+// without this filter, a `$set: req.body` would let any user move a contact
+// to another org, rewrite the activity timeline, or replace attachments.
+const CONTACT_EDITABLE_FIELDS = [
+  'firstName', 'lastName', 'email', 'phone', 'company', 'jobTitle',
+  'status', 'tags', 'notes', 'source', 'city', 'country',
+  'assignedTo', 'birthday', 'anniversary', 'whatsappUrl', 'customFields',
+  'address', 'website', 'leadScore',
+];
+
+const pickFields = (body, allowed) => {
+  const out = {};
+  if (!body || typeof body !== 'object') return out;
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) out[key] = body[key];
+  }
+  return out;
+};
+
 // PUT /api/contacts/:id
 const updateContact = async (req, res, next) => {
   try {
+    const updates = pickFields(req.body, CONTACT_EDITABLE_FIELDS);
+
     const contact = await Contact.findOneAndUpdate(
       { _id: req.params.id, orgId: req.orgId },
-      { $set: req.body },
-      { new: true }
+      { $set: updates },
+      { new: true, runValidators: true }
     ).populate('assignedTo', 'name email avatar');
 
     if (!contact) throw new AppError('Contact not found', 404);
@@ -206,8 +228,11 @@ const importContacts = async (req, res, next) => {
       throw new AppError('Maximum 500 contacts per import', 400);
     }
 
+    // Filter every imported row through the editable-field whitelist before
+    // stamping the server-controlled fields. Stops a crafted import row from
+    // setting orgId, _id, isArchived, attachments, timeline, etc.
     const docs = contacts.map((c) => ({
-      ...c,
+      ...pickFields(c, CONTACT_EDITABLE_FIELDS),
       orgId: req.orgId,
       createdBy: req.user._id,
       source: 'import',

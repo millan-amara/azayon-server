@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const Task = require('../models/Task');
 const Deal = require('../models/Deal');
 const User = require('../models/User');
@@ -15,8 +16,15 @@ const formatMoney = (amount, currency = 'KES') => {
 };
 
 const verifyCronSecret = (req, res, next) => {
-  const secret = req.headers['x-cron-secret'];
-  if (!secret || secret !== process.env.CRON_SECRET) {
+  const provided = req.headers['x-cron-secret'];
+  const expected = process.env.CRON_SECRET;
+  if (!expected || typeof provided !== 'string') {
+    return res.status(401).json({ error: 'Unauthorised' });
+  }
+  // Constant-time compare so an attacker can't byte-by-byte recover the secret.
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return res.status(401).json({ error: 'Unauthorised' });
   }
   next();

@@ -33,10 +33,21 @@ router.get('/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// Drop server-controlled fields from incoming bodies so a payload like
+// { orgId: '<other_org>', _id: '<existing_pipeline>' } can't relocate or
+// hijack pipelines. We pull a fresh `safe` object on every request so the
+// destructuring works regardless of which fields the client sent.
+const stripPipelineSystemFields = (body) => {
+  const { orgId, createdBy, _id, ...safe } = body || {};
+  void orgId; void createdBy; void _id;
+  return safe;
+};
+
 // POST create pipeline (admin only)
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
-    const pipeline = await Pipeline.create({ ...req.body, orgId: req.orgId, createdBy: req.user._id });
+    const safe = stripPipelineSystemFields(req.body);
+    const pipeline = await Pipeline.create({ ...safe, orgId: req.orgId, createdBy: req.user._id });
     emitToOrg(req, 'pipeline.created', { pipelineId: pipeline._id });
     res.status(201).json({ pipeline });
   } catch (error) { next(error); }
@@ -45,9 +56,10 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
 // PUT update pipeline (admin only)
 router.put('/:id', requireRole('admin'), async (req, res, next) => {
   try {
+    const safe = stripPipelineSystemFields(req.body);
     const pipeline = await Pipeline.findOneAndUpdate(
       { _id: req.params.id, orgId: req.orgId },
-      { $set: req.body },
+      { $set: safe },
       { new: true, runValidators: true }
     );
     if (!pipeline) throw new AppError('Pipeline not found', 404);
