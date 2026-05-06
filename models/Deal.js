@@ -56,6 +56,17 @@ const dealSchema = new mongoose.Schema({
     enteredAt: { type: Date, default: Date.now },
     exitedAt: Date,
   }],
+
+  // Internal collaboration thread on the deal. Reps leave context for each
+  // other ("called him Tuesday, follow up Friday"). @mentions resolve to
+  // userIds and fire `mention` notifications via createNotification.
+  // 2000-char cap so a runaway paste can't bloat the deal doc.
+  comments: [{
+    body: { type: String, required: true, trim: true, maxlength: 2000 },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    createdAt: { type: Date, default: Date.now },
+  }],
 }, { timestamps: true });
 
 dealSchema.index({ orgId: 1, status: 1 });

@@ -5,6 +5,7 @@ const {
   createDeal, updateDeal,
   markWon, markLost, deleteDeal,
   exportDeals, importDeals,
+  addComment, deleteComment,
 } = require('../controllers/deal');
 const { protect } = require('../middleware/auth');
 const { attachPlan, checkDealLimit } = require('../middleware/plan');
@@ -27,5 +28,11 @@ router.route('/:id')
 
 router.post('/:id/won', markWon);
 router.post('/:id/lost', markLost);
+
+// Comments — internal collaboration thread on the deal. The /api/deals
+// router already mounts `restrictViewer` upstream in app.js, so viewers can
+// read the deal (which carries the comments) but can't post or delete here.
+router.post('/:id/comments', addComment);
+router.delete('/:id/comments/:commentId', deleteComment);
 
 module.exports = router;

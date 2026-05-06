@@ -106,7 +106,11 @@ const getDeal = async (req, res, next) => {
       .populate('contact', 'firstName lastName email phone company whatsappUrl')
       .populate('assignedTo', 'name email avatar')
       .populate('pipeline', 'name stages visibility allowedUsers')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email')
+      // Populate comment authors + mentions so the UI can render avatars and
+      // mention chips without an N+1 fetch.
+      .populate('comments.createdBy', 'name email avatar')
+      .populate('comments.mentions', 'name email');
 
     if (!deal) throw new AppError('Deal not found', 404);
     if (!userCanAccessPipeline(req.user, deal.pipeline)) {
@@ -531,4 +535,120 @@ const exportDeals = async (req, res, next) => {
   }
 };
 
-module.exports = { getDeals, getKanban, getDeal, createDeal, updateDeal, markWon, markLost, deleteDeal, exportDeals, importDeals };
+// ─── COMMENTS ────────────────────────────────────────────────────────────────
+//
+// Internal collaboration thread on a deal. @mentions fire `mention`
+// notifications to the named users (and a realtime socket nudge). Mentions
+// are validated server-side against the org's user list so a payload can't
+// notify users from another tenant.
+
+// Helper: load deal + check the caller can see the pipeline. Returns the deal
+// (full doc, not lean — we'll mutate `comments` and save). Throws if not
+// allowed so callers can propagate.
+async function loadAccessibleDeal(req) {
+  const deal = await Deal.findOne({ _id: req.params.id, orgId: req.orgId })
+    .populate('pipeline', 'visibility allowedUsers');
+  if (!deal) throw new AppError('Deal not found', 404);
+  if (!userCanAccessPipeline(req.user, deal.pipeline)) {
+    // 404 (not 403) so we don't leak the existence of restricted pipelines
+    throw new AppError('Deal not found', 404);
+  }
+  return deal;
+}
+
+// POST /api/deals/:id/comments
+const addComment = async (req, res, next) => {
+  try {
+    const body = typeof req.body.body === 'string' ? req.body.body.trim() : '';
+    if (!body) throw new AppError('Comment body is required', 400);
+    if (body.length > 2000) throw new AppError('Comment is too long (max 2000 characters)', 400);
+
+    // Validate mentions: must be an array of ObjectIds belonging to this org.
+    // We re-query so a forged payload can't notify a user from another tenant.
+    const rawMentions = Array.isArray(req.body.mentions) ? req.body.mentions : [];
+    let mentionedUsers = [];
+    if (rawMentions.length > 0) {
+      mentionedUsers = await User.find({
+        _id: { $in: rawMentions.slice(0, 20) }, // cap so a 1k-id payload can't fan-out spam
+        orgId: req.orgId,
+        isActive: true,
+      }).select('_id name email').lean();
+    }
+    const mentionIds = mentionedUsers.map((u) => u._id);
+
+    const deal = await loadAccessibleDeal(req);
+
+    const comment = {
+      body,
+      createdBy: req.user._id,
+      mentions: mentionIds,
+      createdAt: new Date(),
+    };
+    deal.comments.push(comment);
+    await deal.save({ timestamps: false }); // a comment isn't deal "activity" for the inactive-deal cron
+
+    // Re-fetch the saved comment with populated author so we can return it
+    // straight to the optimistic UI.
+    const saved = deal.comments[deal.comments.length - 1];
+
+    // Fire mention notifications + realtime nudges. Skip self-mentions —
+    // pinging yourself is just noise.
+    for (const mu of mentionedUsers) {
+      if (mu._id.toString() === req.user._id.toString()) continue;
+      await createNotification({
+        orgId: req.orgId,
+        userId: mu._id,
+        type: 'mention',
+        title: `${req.user.name} mentioned you on a deal`,
+        message: `${deal.title}: ${body.length > 120 ? body.slice(0, 117) + '…' : body}`,
+        resourceType: 'deal',
+        resourceId: deal._id,
+        io: req.app.get('io'),
+      });
+    }
+
+    emitToOrg(req, 'deal.comment_added', { dealId: deal._id, commentId: saved._id });
+
+    // Hydrate author + mentions in the response so the optimistic UI doesn't
+    // need a second roundtrip.
+    const responseComment = {
+      _id: saved._id,
+      body: saved.body,
+      createdAt: saved.createdAt,
+      createdBy: { _id: req.user._id, name: req.user.name, email: req.user.email, avatar: req.user.avatar },
+      mentions: mentionedUsers,
+    };
+    res.status(201).json({ comment: responseComment });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// DELETE /api/deals/:id/comments/:commentId
+// Author can delete their own; admins can delete any comment.
+const deleteComment = async (req, res, next) => {
+  try {
+    const deal = await loadAccessibleDeal(req);
+    const comment = deal.comments.id(req.params.commentId);
+    if (!comment) throw new AppError('Comment not found', 404);
+
+    const isAuthor = comment.createdBy?.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
+    if (!isAuthor && !isAdmin) throw new AppError('You can only delete your own comments', 403);
+
+    deal.comments.pull(comment._id);
+    await deal.save({ timestamps: false });
+
+    emitToOrg(req, 'deal.comment_deleted', { dealId: deal._id, commentId: req.params.commentId });
+
+    res.json({ message: 'Comment deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getDeals, getKanban, getDeal, createDeal, updateDeal, markWon, markLost, deleteDeal,
+  exportDeals, importDeals,
+  addComment, deleteComment,
+};
