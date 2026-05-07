@@ -98,11 +98,17 @@ app.use((req, res, next) => {
   sanitizeRequest(req, res, next);
 });
 
-// Rate limiting
+// Rate limiting — guards the API against abusive bursts. Skips
+// /api/auth/refresh: the client refreshes silently every ~15 min during
+// normal use, and counting those toward the bucket caused random
+// forced-logouts when the limit hit (refresh 429 → interceptor logs out).
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 500,
   message: { error: 'Too many requests, please try again later.' },
+  // req.path is mount-relative inside this middleware (Express strips
+  // /api/), so use req.originalUrl which always has the full path.
+  skip: (req) => req.originalUrl.split('?')[0] === '/api/auth/refresh',
 });
 app.use('/api/', limiter);
 
