@@ -73,18 +73,29 @@ async function assertPublicUrl(rawUrl) {
 }
 
 // Replace template variables like {{contact.firstName}} or
-// {{deal.contact.firstName}} (deep paths). If a segment of the path is
-// missing or undefined, the original {{...}} is left in place so the user
-// can spot the typo rather than seeing "undefined" in their email.
+// {{deal.contact.firstName}} (deep paths).
+//
+// Distinguishes two cases that both used to be lumped together:
+//  - Path is unresolvable (a key doesn't exist in the context tree) → the
+//    original {{...}} is left in place so a typo surfaces instead of
+//    silently rendering empty.
+//  - Path resolves but the value is empty/null (e.g. contact has no
+//    lastName) → render as empty string. Trailing whitespace from the
+//    surrounding template is trimmed off the final result.
 const interpolate = (template, context) => {
   if (!template) return '';
-  return template.replace(/\{\{([\w.]+)\}\}/g, (match, path) => {
-    const value = path.split('.').reduce(
-      (acc, key) => (acc == null ? acc : acc[key]),
-      context,
-    );
-    return value == null || value === '' ? match : value;
+  const out = template.replace(/\{\{([\w.]+)\}\}/g, (match, path) => {
+    const keys = path.split('.');
+    let value = context;
+    for (const key of keys) {
+      if (value == null || typeof value !== 'object' || !(key in value)) {
+        return match; // unresolvable path — keep literal so typos surface
+      }
+      value = value[key];
+    }
+    return value == null ? '' : String(value);
   });
+  return out.trim();
 };
 
 // Check if automation conditions pass
