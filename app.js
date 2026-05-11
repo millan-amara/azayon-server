@@ -78,6 +78,7 @@ app.use(cors({
       'http://localhost:5173',
   ],
   credentials: true,
+  exposedHeaders: ['Content-Disposition'],
 }));
 
 app.use('/api/billing/webhook', express.raw({ type: '*/*' }));
