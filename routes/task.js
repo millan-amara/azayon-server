@@ -13,10 +13,11 @@ router.use(protect);
 // GET /api/tasks
 router.get('/', async (req, res, next) => {
   try {
-    const { status, assignedTo, contactId, dealId, overdue, from, to, page = 1, limit = 20 } = req.query;
+    const { status, excludeStatus, assignedTo, contactId, dealId, overdue, from, to, page = 1, limit = 20 } = req.query;
 
     const filter = { orgId: req.orgId };
     if (status) filter.status = status;
+    else if (excludeStatus) filter.status = { $ne: excludeStatus };
     if (assignedTo) filter.assignedTo = assignedTo;
     if (contactId) filter.contact = contactId;
     if (dealId) filter.deal = dealId;
