@@ -41,15 +41,23 @@ router.get('/status', protect, attachPlan, async (req, res, next) => {
     const limits = req.planLimits;
     const sub = org.subscription;
 
+    const now = new Date();
+    const inPastDueGrace = sub.status === 'past_due' && sub.pastDueGraceEndsAt && sub.pastDueGraceEndsAt > now;
+
     res.json({
       plan: sub.plan,
       status: sub.status,
       isOnTrial: limits.isOnTrial,
       trialEndsAt: sub.trialEndsAt,
       trialDaysLeft: sub.trialEndsAt
-        ? Math.max(0, Math.ceil((new Date(sub.trialEndsAt) - new Date()) / (1000 * 60 * 60 * 24)))
+        ? Math.max(0, Math.ceil((new Date(sub.trialEndsAt) - now) / (1000 * 60 * 60 * 24)))
         : 0,
       subscribedAt: sub.subscribedAt,
+      pastDueGraceEndsAt: sub.pastDueGraceEndsAt,
+      pastDueDaysLeft: inPastDueGrace
+        ? Math.max(0, Math.ceil((new Date(sub.pastDueGraceEndsAt) - now) / (1000 * 60 * 60 * 24)))
+        : 0,
+      inPastDueGrace,
       limits,
     });
   } catch (err) {
@@ -156,6 +164,9 @@ router.post('/webhook', async (req, res) => {
       org.subscription.status = 'active';
       org.subscription.subscribedAt = new Date();
       org.subscription.trialEndsAt = null;
+      // Recovery from past_due (e.g. user pays manually after a failed retry)
+      // — clear the grace timer so the next failure starts a fresh window.
+      org.subscription.pastDueGraceEndsAt = null;
 
       if (data.customer?.customer_code) {
         org.subscription.paystackCustomerCode = data.customer.customer_code;
@@ -185,6 +196,7 @@ router.post('/webhook', async (req, res) => {
       const org = await Org.findOne({ 'subscription.paystackSubscriptionCode': subscriptionCode });
       if (org && org.subscription.status !== 'active') {
         org.subscription.status = 'active';
+        org.subscription.pastDueGraceEndsAt = null;
         await org.save();
         console.log(`Recurring payment succeeded for org ${org._id}`);
       }
@@ -196,9 +208,16 @@ router.post('/webhook', async (req, res) => {
 
       const org = await Org.findOne({ 'subscription.paystackSubscriptionCode': subscriptionCode });
       if (org) {
+        // Only start the grace window on the FIRST failure. Paystack retries
+        // failed charges several times; if we reset the timer on each retry
+        // event, the grace period would effectively be open-ended.
+        const alreadyPastDue = org.subscription.status === 'past_due';
         org.subscription.status = 'past_due';
+        if (!alreadyPastDue || !org.subscription.pastDueGraceEndsAt) {
+          org.subscription.pastDueGraceEndsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+        }
         await org.save();
-        console.log(`Payment failed for org ${org._id}`);
+        console.log(`Payment failed for org ${org._id} (grace ends ${org.subscription.pastDueGraceEndsAt.toISOString()})`);
       }
     }
 
@@ -210,6 +229,7 @@ router.post('/webhook', async (req, res) => {
       if (org) {
         org.subscription.status = 'cancelled';
         org.subscription.cancelledAt = new Date();
+        org.subscription.pastDueGraceEndsAt = null;
         await org.save();
         console.log(`Subscription cancelled for org ${org._id}`);
       }

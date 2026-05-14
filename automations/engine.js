@@ -4,6 +4,7 @@ const Contact = require('../models/Contact');
 const Deal = require('../models/Deal');
 const User = require('../models/User');
 const Pipeline = require('../models/Pipeline');
+const Org = require('../models/Org');
 const { sendEmail } = require('../utils/email');
 const { sendDealInactive, sendDealAssigned, sendTaskReminder, sendTaskAssigned } = require('../utils/whatsapp');
 const axios = require('axios');
@@ -341,6 +342,21 @@ const triggerAutomation = async (triggerType, eventData) => {
     }).lean();
 
     if (automations.length === 0) return;
+
+    // Plan gate: if the org no longer has the automations feature (cancelled
+    // after the period ended, past_due past grace, or never had it), skip
+    // execution. Catches the case where a paid Growth org downgraded but
+    // still has active automation records that would otherwise fire emails,
+    // create tasks and hit external webhooks for free. Only loaded here, not
+    // on every trigger call, so orgs with zero automations don't pay the
+    // extra DB lookup.
+    const org = await Org.findById(orgId);
+    if (!org) return;
+    const features = org.getPlanLimits().features || [];
+    if (!features.includes('automations')) {
+      console.log(`Skipped ${automations.length} automation(s) for org ${orgId} (${triggerType}): plan no longer entitles automations`);
+      return;
+    }
 
     // Re-fetch with populated fields so actions have access to emails, names etc.
     let populatedDeal = deal ? (deal.toObject ? deal.toObject() : deal) : null;

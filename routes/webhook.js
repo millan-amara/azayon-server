@@ -4,6 +4,7 @@ const Contact = require('../models/Contact');
 const Deal = require('../models/Deal');
 const Pipeline = require('../models/Pipeline');
 const { apiKeyAuth } = require('../middleware/auth');
+const { attachPlan, requireFeature, checkContactLimit, checkDealLimit } = require('../middleware/plan');
 const { triggerAutomation } = require('../automations/engine');
 const { emitToOrg } = require('../utils/socket');
 
@@ -20,6 +21,9 @@ const { emitToOrg } = require('../utils/socket');
  */
 
 router.use(apiKeyAuth);
+// Webhooks are a Growth-only feature. Without this gate, any Free org could
+// use its API key to bypass the contact/deal caps via the webhook endpoints.
+router.use(attachPlan, requireFeature('webhooks'));
 
 // Mirrors CONTACT_EDITABLE_FIELDS in controllers/contact.js — kept in sync to
 // stop a webhook caller from setting orgId, _id, isArchived, attachments,
@@ -40,8 +44,10 @@ const pickWebhookFields = (body, allowed) => {
   return out;
 };
 
-// POST /api/webhooks/contacts - create or upsert a contact from n8n
-router.post('/contacts', async (req, res, next) => {
+// POST /api/webhooks/contacts - create or upsert a contact from n8n.
+// Limit check is a backstop for trial orgs (Growth features + Free caps);
+// paid Growth orgs have effectively unlimited contacts so this no-ops for them.
+router.post('/contacts', checkContactLimit, async (req, res, next) => {
   try {
     const fields = pickWebhookFields(req.body, WEBHOOK_CONTACT_FIELDS);
     // Force email to a string so an attacker can't sneak {$ne: null} into the upsert filter.
@@ -90,7 +96,7 @@ router.put('/contacts/:id', async (req, res, next) => {
 });
 
 // POST /api/webhooks/deals - create a deal from n8n
-router.post('/deals', async (req, res, next) => {
+router.post('/deals', checkDealLimit, async (req, res, next) => {
   try {
     const { contactId, pipelineId, stageId, ...rest } = req.body;
 

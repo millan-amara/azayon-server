@@ -5,6 +5,7 @@ const Org = require('../models/Org');
 const Invite = require('../models/Invite');
 const { AppError } = require('../middleware/error');
 const { protect, requireRole } = require('../middleware/auth');
+const { attachPlan, checkUserLimit } = require('../middleware/plan');
 const { sendInviteEmail } = require('../utils/email');
 const crypto = require('crypto');
 
@@ -22,6 +23,20 @@ router.post('/accept-invite', async (req, res, next) => {
 
     const existing = await User.findOne({ email: invite.email, orgId: invite.orgId });
     if (existing) throw new AppError('An account with this email already exists', 409);
+
+    // Re-check the seat limit at accept time. The /invite endpoint already
+    // gates this, but the org's plan may have changed (trial expired, plan
+    // downgraded) between invite creation and acceptance.
+    const org = await Org.findById(invite.orgId);
+    if (!org) throw new AppError('Organisation not found', 404);
+    const limits = org.getPlanLimits();
+    const activeUserCount = await User.countDocuments({ orgId: invite.orgId, isActive: { $ne: false } });
+    if (activeUserCount >= limits.maxUsers) {
+      throw new AppError(
+        `This team has reached its ${limits.maxUsers}-user limit. Please ask an administrator to upgrade the plan or remove an existing teammate before accepting this invite.`,
+        403
+      );
+    }
 
     await User.create({
       orgId: invite.orgId,
@@ -68,7 +83,7 @@ router.get('/invites/pending', requireRole('admin'), async (req, res, next) => {
 });
 
 // POST /api/users/invite
-router.post('/invite', requireRole('admin'), async (req, res, next) => {
+router.post('/invite', requireRole('admin'), attachPlan, checkUserLimit, async (req, res, next) => {
   try {
     const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
     const email = typeof req.body.email === 'string' ? req.body.email.toLowerCase().trim() : '';

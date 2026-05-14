@@ -1,6 +1,8 @@
 const Org = require('../models/Org');
 const Contact = require('../models/Contact');
 const Deal = require('../models/Deal');
+const User = require('../models/User');
+const Invite = require('../models/Invite');
 const { AppError } = require('./error');
 
 // Attaches org + plan info to req — called after protect middleware
@@ -84,4 +86,35 @@ const checkDealLimit = async (req, res, next) => {
   }
 };
 
-module.exports = { attachPlan, requireFeature, checkContactLimit, checkDealLimit };
+// Check user seat limit before sending a new invite.
+// Counts active users + pending unexpired invites so an admin can't queue
+// invites past the cap and have them all accept later.
+const checkUserLimit = async (req, res, next) => {
+  try {
+    const limits = req.planLimits;
+    if (!limits) return next();
+
+    const [userCount, pendingInvites] = await Promise.all([
+      User.countDocuments({ orgId: req.orgId, isActive: { $ne: false } }),
+      Invite.countDocuments({ orgId: req.orgId, status: 'pending', expiresAt: { $gt: new Date() } }),
+    ]);
+
+    const total = userCount + pendingInvites;
+    if (total >= limits.maxUsers) {
+      return res.status(403).json({
+        error: 'plan_limit',
+        feature: 'users',
+        current: total,
+        limit: limits.maxUsers,
+        message: `You've reached the ${limits.maxUsers}-user limit on the ${limits.name} plan. Upgrade or remove an existing teammate to invite someone new.`,
+        upgrade: true,
+      });
+    }
+    req.userUsage = { count: total, limit: limits.maxUsers };
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { attachPlan, requireFeature, checkContactLimit, checkDealLimit, checkUserLimit };

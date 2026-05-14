@@ -7,9 +7,11 @@ const Task = require('../models/Task');
 const TEMPLATES = require('../automations/templates');
 const { AppError } = require('../middleware/error');
 const { protect, requireRole } = require('../middleware/auth');
+const { attachPlan, requireFeature } = require('../middleware/plan');
 const { testRunAutomation } = require('../automations/engine');
 
 router.use(protect);
+router.use(attachPlan, requireFeature('automations'));
 
 // GET /api/automations/templates
 router.get('/templates', (req, res) => {

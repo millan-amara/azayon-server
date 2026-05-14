@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
+const { attachPlan, requireFeature } = require('../middleware/plan');
 
 router.use(protect);
+router.use(attachPlan, requireFeature('ai'));
 
 // POST /api/ai/chat - proxy to Anthropic, keeps API key server-side
 router.post('/chat', async (req, res, next) => {

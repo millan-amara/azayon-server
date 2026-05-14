@@ -63,6 +63,11 @@ const orgSchema = new mongoose.Schema({
     trialEndsAt: { type: Date },
     subscribedAt: { type: Date },
     cancelledAt: { type: Date },
+    // When set in the future, the org is in past_due but still has Growth
+    // access ("dunning grace") — a 5-day window after the first failed
+    // payment for the user to update their card before features hard-lock.
+    // Cleared on recovery (active) or escalation (cancelled).
+    pastDueGraceEndsAt: { type: Date },
     // Paystack
     paystackCustomerCode: { type: String },
     paystackSubscriptionCode: { type: String },
@@ -83,14 +88,36 @@ orgSchema.pre('save', async function () {
   }
 });
 
-// Helper — get effective plan limits
+// Helper — get effective plan limits.
+// Paid Growth (active or cancelling): full Growth caps and features.
+// Trial: Growth FEATURE SET (automations, AI, attachments, webhooks) so the
+//   user can sample premium capabilities — but Free NUMERIC CAPS on
+//   contacts / deals / users. The wall they hit during the trial is what
+//   actually motivates an upgrade; previously trial was indistinguishable
+//   from paid Growth and there was no in-trial pressure to convert.
+// Everyone else (free, past_due, cancelled, expired trial): Free.
 orgSchema.methods.getPlanLimits = function () {
   const sub = this.subscription;
-  const isOnTrial = sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt > new Date();
-  const effectivePlan = (sub.plan === 'growth' && (sub.status === 'active' || sub.status === 'cancelling')) || isOnTrial
-    ? 'growth'
-    : 'free';
-  return { ...PLANS[effectivePlan], effectivePlan, isOnTrial };
+  const now = new Date();
+  const isOnTrial = sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt > now;
+  const inPastDueGrace = sub.status === 'past_due' && sub.pastDueGraceEndsAt && sub.pastDueGraceEndsAt > now;
+  // Treat past_due as Growth while inside the dunning grace window. Without
+  // this, a single failed card retry would instantly break n8n webhooks,
+  // automations, and AI for a paying customer mid-month — far too harsh.
+  const isPaidGrowth = sub.plan === 'growth' && (sub.status === 'active' || sub.status === 'cancelling' || inPastDueGrace);
+
+  if (isPaidGrowth) {
+    return { ...PLANS.growth, effectivePlan: 'growth', isOnTrial: false };
+  }
+  if (isOnTrial) {
+    return {
+      ...PLANS.free,
+      features: PLANS.growth.features,
+      effectivePlan: 'free',
+      isOnTrial: true,
+    };
+  }
+  return { ...PLANS.free, effectivePlan: 'free', isOnTrial: false };
 };
 
 module.exports = mongoose.model('Org', orgSchema);

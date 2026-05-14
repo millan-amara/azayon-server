@@ -4,9 +4,11 @@ const crypto = require('crypto');
 const Contact = require('../models/Contact');
 const Deal = require('../models/Deal');
 const { protect } = require('../middleware/auth');
+const { attachPlan, requireFeature } = require('../middleware/plan');
 const { AppError } = require('../middleware/error');
 
 router.use(protect);
+router.use(attachPlan);
 
 // Helper — get model by resource type
 const getModel = (type) => {
@@ -16,8 +18,10 @@ const getModel = (type) => {
 };
 
 // POST /api/attachments/:type/:id
-// Called after Cloudinary upload succeeds — saves metadata to the resource
-router.post('/:type/:id', async (req, res, next) => {
+// Called after Cloudinary upload succeeds — saves metadata to the resource.
+// Gated by plan: DELETE is intentionally left open so users on a downgraded
+// plan can still tidy up files they uploaded while on Growth/trial.
+router.post('/:type/:id', requireFeature('attachments'), async (req, res, next) => {
   try {
     const { type, id } = req.params;
     const { publicId, url, name, size, mimeType } = req.body;
