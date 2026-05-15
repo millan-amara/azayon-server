@@ -31,6 +31,18 @@ const orgSchema = new mongoose.Schema({
       end: { type: String, default: '17:00' },
       workDays: { type: [Number], default: [1, 2, 3, 4, 5] }, // 0=Sun ... 6=Sat
     },
+    // Branding applied to invoices, quotes, and the public document page.
+    // These values are *snapshotted* onto each Document at creation time
+    // (see Document.fromLogoUrl / fromBrandColor / fromFooterText / fromAddress)
+    // so historical documents keep their original branding if the org later
+    // changes its logo or colors.
+    branding: {
+      logoUrl:      { type: String },           // Cloudinary secure_url
+      logoPublicId: { type: String },           // for deletion on replace
+      brandColor:   { type: String },           // hex, e.g. '#5046e4'
+      address:      { type: String },           // multi-line business address
+      footerText:   { type: String },           // shown at the bottom of every PDF
+    },
   },
 
   // First-time setup tracking. The wizard renders until completed/skipped is true.

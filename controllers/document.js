@@ -127,7 +127,11 @@ const createDocument = async (req, res, next) => {
       fromBusinessName: org.name,
       fromEmail:        req.user?.email,
       fromPhone:        req.user?.phone,
-      // fromAddress: organisation address — not in schema yet, leaving blank
+      fromAddress:      org.settings?.branding?.address,
+      // Snapshot branding so a later logo/color change doesn't rewrite this doc.
+      fromLogoUrl:    org.settings?.branding?.logoUrl,
+      fromBrandColor: org.settings?.branding?.brandColor,
+      fromFooterText: org.settings?.branding?.footerText,
 
       items: items.map((it) => ({
         description: String(it.description || '').trim(),
@@ -202,7 +206,7 @@ const downloadDocumentPdf = async (req, res, next) => {
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${doc.number}.pdf"`);
-    renderDocumentPdf(doc, res);
+    await renderDocumentPdf(doc, res);
   } catch (err) { next(err); }
 };
 
@@ -238,6 +242,14 @@ const sendDocument = async (req, res, next) => {
         ? resolvedMessage.replace(/\n/g, '<br/>')
         : `Please find ${isInvoice ? 'invoice' : 'quote'} <strong>${doc.number}</strong> from <strong>${doc.fromBusinessName}</strong>.`;
 
+      // Use the org's brand color for the CTA when available — keeps the
+      // email visually consistent with the PDF the recipient is about to view.
+      const HEX = /^#[0-9a-fA-F]{6}$/;
+      const ctaColor = HEX.test(doc.fromBrandColor || '') ? doc.fromBrandColor : '#5046e4';
+      const logoHtml = doc.fromLogoUrl
+        ? `<img src="${doc.fromLogoUrl}" alt="${doc.fromBusinessName}" style="max-height:40px;max-width:140px;display:block;margin-bottom:8px"/>`
+        : '';
+
       await sendEmail({
         to: recipient,
         subject: resolvedSubject || `${heading} ${doc.number} from ${doc.fromBusinessName}`,
@@ -246,7 +258,7 @@ const sendDocument = async (req, res, next) => {
           <html><head><meta charset="utf-8"/></head>
           <body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
             <div style="max-width:560px;margin:40px auto;background:#fff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
-              <div style="background:#1e2336;padding:24px 32px"><h1 style="margin:0;color:#fff;font-size:18px;font-weight:600">${heading} ${doc.number}</h1></div>
+              <div style="background:#1e2336;padding:24px 32px">${logoHtml}<h1 style="margin:0;color:#fff;font-size:18px;font-weight:600">${heading} ${doc.number}</h1></div>
               <div style="padding:28px 32px;color:#374151;font-size:15px">
                 <p style="margin:0 0 16px">Hi ${doc.customerName},</p>
                 <p style="margin:0 0 16px">${bodyHtml}</p>
@@ -254,7 +266,7 @@ const sendDocument = async (req, res, next) => {
                   <p style="margin:0;font-size:13px;color:#6b7280">Total</p>
                   <p style="margin:4px 0 0;font-size:22px;font-weight:700;color:#111827">${doc.currency} ${Number(doc.total).toLocaleString('en-KE', { minimumFractionDigits: 2 })}</p>
                 </div>
-                <a href="${publicUrl}" style="display:inline-block;background:#5046e4;color:#fff;text-decoration:none;padding:10px 24px;border-radius:8px;font-size:14px;font-weight:600;margin-top:8px">${cta}</a>
+                <a href="${publicUrl}" style="display:inline-block;background:${ctaColor};color:#fff;text-decoration:none;padding:10px 24px;border-radius:8px;font-size:14px;font-weight:600;margin-top:8px">${cta}</a>
               </div>
               <div style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb"><p style="margin:0;color:#9ca3af;font-size:12px">${doc.fromBusinessName}${doc.fromEmail ? ' · ' + doc.fromEmail : ''}</p></div>
             </div>
@@ -372,6 +384,9 @@ const convertQuoteToInvoice = async (req, res, next) => {
       fromEmail:        quote.fromEmail,
       fromPhone:        quote.fromPhone,
       fromAddress:      quote.fromAddress,
+      fromLogoUrl:      quote.fromLogoUrl,
+      fromBrandColor:   quote.fromBrandColor,
+      fromFooterText:   quote.fromFooterText,
 
       // Line items — deep-clone to detach from the quote's documents
       items: (quote.items || []).map((it) => ({

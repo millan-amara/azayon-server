@@ -67,7 +67,7 @@ router.get('/documents/:token/pdf', async (req, res, next) => {
     const doc = await getByToken(req.params.token);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${doc.number}.pdf"`);
-    renderDocumentPdf(doc.toObject(), res);
+    await renderDocumentPdf(doc.toObject(), res);
   } catch (err) { next(err); }
 });
 

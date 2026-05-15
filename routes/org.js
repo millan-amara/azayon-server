@@ -44,6 +44,26 @@ router.put('/me', requireRole('admin'), async (req, res, next) => {
         if (Object.keys(bh).length) s.businessHours = bh;
       }
 
+      if (settings.branding && typeof settings.branding === 'object') {
+        const b = {};
+        const { logoUrl, logoPublicId, brandColor, address, footerText } = settings.branding;
+        // Strings are accepted as-is; '' clears the field. Cap free-text to
+        // reasonable sizes so a bug or bad paste can't bloat the org doc.
+        if (typeof logoUrl === 'string')      b.logoUrl      = logoUrl.slice(0, 500);
+        if (typeof logoPublicId === 'string') b.logoPublicId = logoPublicId.slice(0, 200);
+        // Brand color must look like a hex; silently drop anything else
+        // rather than 500-ing — the PDF renderer falls back to the default.
+        if (typeof brandColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(brandColor)) {
+          b.brandColor = brandColor.toLowerCase();
+        } else if (brandColor === '') {
+          b.brandColor = '';
+        }
+        if (typeof address === 'string')    b.address    = address.slice(0, 500);
+        if (typeof footerText === 'string') b.footerText = footerText.slice(0, 500);
+        // Dotted paths so we don't wipe sibling branding fields the caller didn't send
+        Object.entries(b).forEach(([k, v]) => { updates[`settings.branding.${k}`] = v; });
+      }
+
       // Merge into org.settings without wiping unspecified fields
       Object.entries(s).forEach(([k, v]) => { updates[`settings.${k}`] = v; });
     }

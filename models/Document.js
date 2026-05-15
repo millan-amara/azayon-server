@@ -41,6 +41,11 @@ const documentSchema = new mongoose.Schema({
   fromEmail:        { type: String },
   fromPhone:        { type: String },
   fromAddress:      { type: String },
+  // Branding snapshot — see Org.settings.branding for the source of truth.
+  // Snapshotted so a logo/color change doesn't retroactively rewrite old invoices.
+  fromLogoUrl:    { type: String },
+  fromBrandColor: { type: String },
+  fromFooterText: { type: String },
 
   // Line items + totals
   items:     { type: [lineItemSchema], default: [] },
