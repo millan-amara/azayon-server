@@ -60,6 +60,25 @@ router.put('/me', requireRole('admin'), async (req, res, next) => {
         }
         if (typeof address === 'string')    b.address    = address.slice(0, 500);
         if (typeof footerText === 'string') b.footerText = footerText.slice(0, 500);
+
+        // Billing contact (shown on invoices). Email is validated lightly;
+        // an obviously broken string is rejected rather than silently saved.
+        const { billingEmail, billingPhone } = settings.branding;
+        if (typeof billingEmail === 'string') {
+          const trimmed = billingEmail.trim();
+          if (trimmed === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+            b.billingEmail = trimmed;
+          } else {
+            throw new AppError('Billing email is not a valid email address', 400);
+          }
+        }
+        if (typeof billingPhone === 'string') {
+          // Phone format varies wildly across the supported markets — keep
+          // server validation loose, just strip and length-cap. Client renders
+          // it back verbatim so the user gets what they typed.
+          b.billingPhone = billingPhone.trim().slice(0, 40);
+        }
+
         // Dotted paths so we don't wipe sibling branding fields the caller didn't send
         Object.entries(b).forEach(([k, v]) => { updates[`settings.branding.${k}`] = v; });
       }

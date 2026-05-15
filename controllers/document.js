@@ -125,8 +125,11 @@ const createDocument = async (req, res, next) => {
       customerAddress: [contact.city, contact.country].filter(Boolean).join(', '),
 
       fromBusinessName: org.name,
-      fromEmail:        req.user?.email,
-      fromPhone:        req.user?.phone,
+      // Prefer the org-level billing contact so customers see one consistent
+      // business email/phone regardless of which team member issued the doc.
+      // Fall back to the creator's own profile only when the org hasn't set one.
+      fromEmail:        org.settings?.branding?.billingEmail || req.user?.email,
+      fromPhone:        org.settings?.branding?.billingPhone || req.user?.phone,
       fromAddress:      org.settings?.branding?.address,
       // Snapshot branding so a later logo/color change doesn't rewrite this doc.
       fromLogoUrl:    org.settings?.branding?.logoUrl,

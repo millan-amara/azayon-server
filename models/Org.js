@@ -42,6 +42,13 @@ const orgSchema = new mongoose.Schema({
       brandColor:   { type: String },           // hex, e.g. '#5046e4'
       address:      { type: String },           // multi-line business address
       footerText:   { type: String },           // shown at the bottom of every PDF
+      // Org-level billing contact. These flow onto every new Document's
+      // fromEmail/fromPhone snapshot so customers see the *business's*
+      // contact details (not whichever team member happened to click
+      // "create invoice"). The creator's own profile email/phone is the
+      // fallback if these are left blank.
+      billingEmail: { type: String },
+      billingPhone: { type: String },
     },
   },
 
