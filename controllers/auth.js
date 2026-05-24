@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const Org = require('../models/Org');
 const Pipeline = require('../models/Pipeline');
@@ -11,6 +12,11 @@ const {
   sendPasswordResetEmail,
   sendWelcomeEmail,
 } = require('../utils/email');
+
+// Single shared verifier — instantiated once at module load. Verifying an ID
+// token here doesn't hit Google's network on every request: the library
+// caches Google's public signing keys for us.
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // SHA-256 of a token. Used to store reset/verify tokens at rest so a DB
 // snapshot can't be turned into account takeovers — the user keeps the raw
@@ -180,6 +186,176 @@ const login = async (req, res, next) => {
     if (!user.isActive) throw new AppError('Account is deactivated', 403);
 
     const org = await Org.findById(user.orgId);
+    const { accessToken, refreshToken } = generateTokens(user._id);
+    const hashedRefresh = await bcrypt.hash(refreshToken, 8);
+    user.refreshTokens = [...(user.refreshTokens || []).slice(-4), hashedRefresh];
+    user.lastLogin = new Date();
+    await user.save();
+
+    setTokenCookies(res, accessToken, refreshToken);
+    res.json({ user, org, accessToken });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Seed a brand-new org the way /register does: trial subscription, default
+// pipeline, and a couple of safe automations. Shared by the Google sign-up
+// path so Google users land on the same starting experience as email/password
+// signups. Keep this in sync with the equivalent block in `register`.
+const seedNewOrgForUser = async ({ orgName, user }) => {
+  await Pipeline.createDefault(user.orgId, user._id);
+  const Automation = require('../models/Automation');
+  const TEMPLATES = require('../automations/templates');
+  const defaultTemplateIds = ['follow_up_cold_deal', 'overdue_task_email'];
+  await Automation.insertMany(
+    TEMPLATES
+      .filter((t) => defaultTemplateIds.includes(t.id))
+      .map((t) => ({
+        orgId: user.orgId,
+        name: t.name,
+        description: t.description,
+        isActive: true,
+        trigger: t.trigger,
+        conditions: t.conditions,
+        actions: t.actions,
+        createdBy: user._id,
+      }))
+  );
+  // orgName param is kept for future use (e.g. logging) — the Org itself is
+  // already created and named by the caller before this runs.
+  return orgName;
+};
+
+// POST /api/auth/google
+//
+// Single endpoint that handles sign-in AND sign-up via a Google Identity
+// Services ID token (the JWT the browser receives from Google after the user
+// clicks the Google button). Resolution order:
+//   1. Existing user with this googleId  → sign them in.
+//   2. Existing user with this email     → link Google to that account, sign them in.
+//   3. Pending Invite for this email     → create user in inviter's org (mirrors /accept-invite).
+//   4. Brand-new email                   → create a new Org + admin user (mirrors /register).
+const googleAuth = async (req, res, next) => {
+  try {
+    const credential = asString(req.body.credential);
+    if (!credential) throw new AppError('Missing Google credential', 400);
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      throw new AppError('Google sign-in is not configured on this server', 500);
+    }
+
+    // Verify the token's signature, audience, and expiry against Google's
+    // published keys. Any failure here means we can't trust the payload.
+    let payload;
+    try {
+      const ticket = await googleClient.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+      payload = ticket.getPayload();
+    } catch {
+      throw new AppError('Invalid Google credential', 401);
+    }
+
+    const googleId = asString(payload?.sub);
+    const email = asEmail(payload?.email);
+    const emailVerified = payload?.email_verified === true;
+    const fullName = asString(payload?.name || payload?.given_name || '').trim();
+    const avatar = asString(payload?.picture || '');
+
+    if (!googleId || !email) {
+      throw new AppError('Google account is missing required fields', 400);
+    }
+    // Google itself flagged the email as unverified — almost never happens for
+    // standard consumer accounts but worth guarding against (a workspace admin
+    // could in theory pre-create unverified aliases).
+    if (!emailVerified) {
+      throw new AppError('Your Google email is not verified. Please verify it with Google and try again.', 401);
+    }
+
+    // 1) Fast path: stable Google id match.
+    let user = await User.findOne({ googleId }).select('+refreshTokens');
+
+    // 2) Else look up by email and link this Google identity to the account.
+    if (!user) {
+      user = await User.findOne({ email }).select('+refreshTokens');
+      if (user) {
+        user.googleId = googleId;
+        user.emailVerified = true;
+        // authProvider stays 'local' because they have a password — they can
+        // sign in either way going forward.
+        if (!user.avatar && avatar) user.avatar = avatar;
+      }
+    }
+
+    let org;
+    if (user) {
+      if (!user.isActive) throw new AppError('Account is deactivated', 403);
+      org = await Org.findById(user.orgId);
+    } else {
+      // 3) No user yet — honour any pending invite for this email so the
+      // new account joins the inviter's org instead of creating a fresh one.
+      const invite = await Invite.findOne({
+        email,
+        status: 'pending',
+        expiresAt: { $gt: new Date() },
+      });
+
+      if (invite) {
+        org = await Org.findById(invite.orgId);
+        if (!org) throw new AppError('Invitation organisation not found', 400);
+        // Mirror /api/users/accept-invite seat-limit enforcement so a Google
+        // accept can't bypass it.
+        const limits = org.getPlanLimits();
+        const activeUserCount = await User.countDocuments({
+          orgId: invite.orgId,
+          isActive: { $ne: false },
+        });
+        if (activeUserCount >= limits.maxUsers) {
+          throw new AppError(
+            `This team has reached its ${limits.maxUsers}-user limit. Please ask an administrator to upgrade the plan or remove an existing teammate before accepting this invite.`,
+            403
+          );
+        }
+        user = await User.create({
+          orgId: org._id,
+          name: fullName || invite.name || email.split('@')[0],
+          email,
+          googleId,
+          authProvider: 'google',
+          role: invite.role || 'sales_rep',
+          emailVerified: true,
+          avatar,
+        });
+        invite.status = 'accepted';
+        await invite.save();
+      } else {
+        // 4) Brand-new signup: spin up a personal org. No phone collected on
+        // this path (Google doesn't return one) — users can add it later in
+        // Settings; this is the deliberate trade-off for one-click sign-up.
+        const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const orgName = fullName ? `${fullName}'s Workspace` : 'My Workspace';
+        org = await Org.create({
+          name: orgName,
+          createdBy: null,
+          subscription: { plan: 'free', status: 'trialing', trialEndsAt },
+        });
+        user = await User.create({
+          orgId: org._id,
+          name: fullName || email.split('@')[0],
+          email,
+          googleId,
+          authProvider: 'google',
+          role: 'admin',
+          emailVerified: true,
+          avatar,
+        });
+        org.createdBy = user._id;
+        await org.save();
+        await seedNewOrgForUser({ orgName, user });
+      }
+    }
+
     const { accessToken, refreshToken } = generateTokens(user._id);
     const hashedRefresh = await bcrypt.hash(refreshToken, 8);
     user.refreshTokens = [...(user.refreshTokens || []).slice(-4), hashedRefresh];
@@ -364,7 +540,7 @@ const resetPassword = async (req, res, next) => {
 };
 
 module.exports = {
-  register, login, refresh, logout, getMe,
+  register, login, googleAuth, refresh, logout, getMe,
   verifyEmail, resendVerification,
   forgotPassword, resetPassword,
 };

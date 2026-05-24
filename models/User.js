@@ -5,7 +5,20 @@ const userSchema = new mongoose.Schema({
   orgId: { type: mongoose.Schema.Types.ObjectId, ref: 'Org', required: true, index: true },
   name: { type: String, required: true, trim: true },
   email: { type: String, required: true, lowercase: true, trim: true },
-  password: { type: String, required: true, minlength: 6 },
+  // Password is only required for local-auth accounts. Google sign-in users
+  // have no password — they authenticate via their Google ID token.
+  password: {
+    type: String,
+    minlength: 6,
+    required: function () { return this.authProvider !== 'google'; },
+  },
+  // 'local' = email/password, 'google' = Google OAuth. An account that signed
+  // up with email/password but later linked Google stays 'local' (still has a
+  // usable password); only accounts that have NEVER had a password are 'google'.
+  authProvider: { type: String, enum: ['local', 'google'], default: 'local' },
+  // Google's stable user id (sub claim). Unique when set; sparse so local-only
+  // users don't all collide on null.
+  googleId: { type: String, index: { unique: true, sparse: true } },
   role: { type: String, enum: ['admin', 'sales_rep', 'viewer'], default: 'sales_rep' },
   // Platform-level flag — orthogonal to org `role`. Grants access to /api/superadmin/*
   // for the founders' cross-tenant dashboard. Never set this through the UI.
@@ -27,14 +40,17 @@ const userSchema = new mongoose.Schema({
 // Compound unique index - email unique per org
 userSchema.index({ email: 1, orgId: 1 }, { unique: true });
 
-// Hash password before save
+// Hash password before save. Skip for Google-only users (no password set).
 userSchema.pre('save', async function () {
-  if (!this.isModified('password')) return;
+  if (!this.isModified('password') || !this.password) return;
   this.password = await bcrypt.hash(this.password, 12);
 });
 
-// Compare password
+// Compare password. Returns false for Google-only accounts (no password hash
+// to compare against) so an email/password login attempt against such an
+// account fails as "invalid credentials" without crashing bcrypt.
 userSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password) return false;
   return bcrypt.compare(candidatePassword, this.password);
 };
 
