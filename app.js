@@ -54,6 +54,7 @@ const io = new Server(server, {
   cors: {
     origin: [
       'https://app.azayon.com',
+      'https://azayon-crm-client.netlify.app',
       'http://localhost:5173',
     ],
     credentials: true,
@@ -75,6 +76,7 @@ app.use(morgan(process.env.NODE_ENV === 'development' ? 'dev' : 'combined'));
 app.use(cors({
   origin: [
       'https://app.azayon.com',
+      'https://azayon-crm-client.netlify.app',
       'http://localhost:5173',
   ],
   credentials: true,
